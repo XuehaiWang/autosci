@@ -106,3 +106,38 @@ Implemented three-layer memory system with LLM-based reflection:
 - on_session_end: trigger LLM reflection (completed sessions only)
 
 Next: Implement skill system (P5)
+
+### Phase 5: Skill System (P5) (COMPLETED)
+
+Implemented reusable research procedure templates:
+
+**SkillEngine** (`skills/engine.py`):
+- Auto-discovers .md files with YAML frontmatter from configured directories
+- Tag + keyword matching for task-relevant skill selection
+- Create new skills programmatically (agent can codify learned procedures)
+- Prompt injection: only name+description (not full content) to save context
+
+**Skill Tools** (`tools/skill_tools.py`):
+- list_skills: show all available skills
+- view_skill: read full procedure (agent calls on demand)
+- create_skill: create new skill from experience
+
+**3 Built-in Skills** (`skills/`):
+- literature_review: systematic literature review procedure
+- experiment_design: rigorous experiment design checklist
+- data_analysis: structured data analysis workflow
+
+**Runner integration**:
+- SkillEngine initialized from config dirs on runner startup
+- Skills matched to task and injected into system prompt
+- Skill tools connected via module-level injection
+
+## P0-P5 Complete
+
+All planned modules implemented:
+- P0: Core agent loop (runner, LLM client, prompt builder, error handler)
+- P1: Core tools (file: read/write/list/glob/grep, terminal: execute_command)
+- P2: Session storage (SQLite + Markdown export) + Context engine (pluggable compression)
+- P3: Delegation (delegate/ask_user + 5 research subagents)
+- P4: Memory (file provider, 3-type memory, LLM reflection, pre-compress rescue)
+- P5: Skills (engine, 3 built-in skills, create/view/list tools)

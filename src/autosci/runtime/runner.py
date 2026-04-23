@@ -13,6 +13,7 @@ from autosci.protocols.schemas import RunContext, RunResult, TokenUsage
 from autosci.runtime.llm_client import LLMClient
 from autosci.runtime.prompt_builder import PromptBuilder
 from autosci.runtime.error_handler import ErrorHandler
+from autosci.skills.engine import SkillEngine
 from autosci.storage.session_store import SessionStore
 from autosci.storage.exporter import SessionExporter
 from autosci.tools.registry import registry as tool_registry
@@ -70,6 +71,16 @@ class AgentRunner:
         from autosci.tools.memory_tools import set_memory_manager
         set_memory_manager(self.memory_manager)
 
+        # Skill engine
+        skills_config = config.get("skills", {})
+        self.skill_engine = SkillEngine(
+            skill_dirs=skills_config.get("dirs", ["~/.autosci/skills/", "./skills/"]),
+        )
+
+        # Inject skill engine into skill tools
+        from autosci.tools.skill_tools import set_skill_engine
+        set_skill_engine(self.skill_engine)
+
     def run(
         self,
         agent,
@@ -116,12 +127,16 @@ class AgentRunner:
         self.memory_manager.on_session_start(session_id, task)
         memory_block = self.memory_manager.get_system_prompt_block()
 
+        # Match relevant skills
+        skills_block = self.skill_engine.get_prompt_block(task)
+
         # Build system prompt
         available_agents = agent_registry.list_available()
         system_prompt = self.prompt_builder.build_system_prompt(
             agent,
             available_agents=available_agents if available_agents else None,
             memory_block=memory_block if memory_block else None,
+            skills_block=skills_block if skills_block else None,
         )
 
         # Get tool definitions

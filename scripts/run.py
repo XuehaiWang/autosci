@@ -38,6 +38,7 @@ def main():
     import autosci.tools.terminal_tool  # noqa: F401
     import autosci.tools.agent_tools  # noqa: F401
     import autosci.tools.memory_tools  # noqa: F401
+    import autosci.tools.skill_tools  # noqa: F401
 
     # Import main agent (triggers self-registration) and discover subagents
     import autosci.agents.main_agent  # noqa: F401
