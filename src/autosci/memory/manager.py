@@ -20,15 +20,21 @@ class MemoryManager:
     def __init__(self, provider: MemoryProvider, llm_client=None):
         self.provider = provider
         self.llm_client = llm_client
-        self._current_session_id: Optional[str] = None
-        self._current_task: Optional[str] = None
+        self._session_stack: list[tuple[str, str]] = []  # stack of (session_id, task)
+
+    @property
+    def _current_session_id(self) -> Optional[str]:
+        return self._session_stack[-1][0] if self._session_stack else None
+
+    @property
+    def _current_task(self) -> Optional[str]:
+        return self._session_stack[-1][1] if self._session_stack else None
 
     # === Lifecycle hooks (called by the runner) ===
 
     def on_session_start(self, session_id: str, task: str) -> None:
-        """Called at the beginning of an agent run."""
-        self._current_session_id = session_id
-        self._current_task = task
+        """Called at the beginning of an agent run. Supports nested delegation."""
+        self._session_stack.append((session_id, task))
         self.provider.on_session_start(session_id, task)
 
     def on_session_end(self, session_id: str, messages: list[dict], status: str) -> None:
@@ -36,8 +42,9 @@ class MemoryManager:
         if status == "completed" and self.llm_client:
             self._reflect_on_session(session_id, messages)
         self.provider.on_session_end(session_id, messages)
-        self._current_session_id = None
-        self._current_task = None
+        # Pop session from stack (restore parent's context)
+        if self._session_stack and self._session_stack[-1][0] == session_id:
+            self._session_stack.pop()
 
     def on_pre_compress(self, messages_to_compress: list[dict]) -> None:
         """Called before context compression. Rescues key info from tool results."""

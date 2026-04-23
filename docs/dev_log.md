@@ -141,3 +141,18 @@ All planned modules implemented:
 - P3: Delegation (delegate/ask_user + 5 research subagents)
 - P4: Memory (file provider, 3-type memory, LLM reflection, pre-compress rescue)
 - P5: Skills (engine, 3 built-in skills, create/view/list tools)
+
+### High-priority fixes (COMPLETED)
+
+1. **External config file**: support `~/.autosci/config.yaml` with deep merge over defaults.
+   `--init-config` flag creates default config. Priority: overrides > file > defaults.
+
+2. **Web tools**: web_search (ddgs with graceful fallback) + web_fetch (requests + BeautifulSoup).
+   Tested: successfully fetched and parsed arXiv paper page.
+
+3. **Delegation state sharing**: MemoryManager now uses a session stack instead of single
+   `_current_session_id`. Child delegation pushes, session end pops — parent context restored.
+
+4. **Interactive REPL with TUI**: multi-turn conversation with rich Panel output,
+   prompt_toolkit input with history, spinner during LLM calls. Commands: /help /status
+   /history /clear /quit. Session saved on exit. Tested: multi-turn context retention works.
