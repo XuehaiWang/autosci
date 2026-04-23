@@ -7,6 +7,8 @@ import uuid
 
 from autosci.context.compressor import SummarizationCompressor
 from autosci.context.engine import ContextEngine
+from autosci.memory.file_provider import FileMemoryProvider
+from autosci.memory.manager import MemoryManager
 from autosci.protocols.schemas import RunContext, RunResult, TokenUsage
 from autosci.runtime.llm_client import LLMClient
 from autosci.runtime.prompt_builder import PromptBuilder
@@ -25,8 +27,7 @@ class AgentRunner:
     The runner is agent-agnostic — it can run any BaseAgent subclass
     (main agent or subagent) using the same while-loop.
 
-    Integrates session storage (SQLite + Markdown export) and context
-    compression (pluggable ContextEngine).
+    Integrates session storage, context compression, and memory system.
     """
 
     # Tools intercepted by the runner instead of dispatched to the registry
@@ -54,6 +55,20 @@ class AgentRunner:
             threshold_ratio=runtime_config.get("compression_threshold", 0.75),
             llm_client=self.llm_client,
         )
+
+        # Memory system
+        memory_config = config.get("memory", {})
+        memory_provider = FileMemoryProvider(
+            base_dir=memory_config.get("base_dir", "~/.autosci/memory/"),
+        )
+        self.memory_manager = MemoryManager(
+            provider=memory_provider,
+            llm_client=self.llm_client,
+        )
+
+        # Inject memory manager into memory tools
+        from autosci.tools.memory_tools import set_memory_manager
+        set_memory_manager(self.memory_manager)
 
     def run(
         self,
@@ -97,11 +112,16 @@ class AgentRunner:
         context_window = self.config.get("runtime", {}).get("context_window", 200000)
         self.context_engine.on_session_start(context_window)
 
+        # Initialize memory
+        self.memory_manager.on_session_start(session_id, task)
+        memory_block = self.memory_manager.get_system_prompt_block()
+
         # Build system prompt
         available_agents = agent_registry.list_available()
         system_prompt = self.prompt_builder.build_system_prompt(
             agent,
             available_agents=available_agents if available_agents else None,
+            memory_block=memory_block if memory_block else None,
         )
 
         # Get tool definitions
@@ -131,7 +151,7 @@ class AgentRunner:
                     token_usage=total_usage,
                     tool_calls_count=tool_calls_count,
                 )
-                self._finalize_session(result)
+                self._finalize_session(result, messages)
                 return result
 
             # Update token usage
@@ -159,7 +179,7 @@ class AgentRunner:
                     token_usage=total_usage,
                     tool_calls_count=tool_calls_count,
                 )
-                self._finalize_session(result)
+                self._finalize_session(result, messages)
                 return result
 
             # Build assistant message with tool_use blocks
@@ -211,6 +231,8 @@ class AgentRunner:
             current_tokens = total_usage.prompt_tokens
             if self.context_engine.should_compress(current_tokens):
                 logger.info("Context compression triggered")
+                # Let memory rescue info before compression
+                self.memory_manager.on_pre_compress(messages)
                 messages = self.context_engine.compress(messages)
 
         # Budget exhausted
@@ -222,17 +244,24 @@ class AgentRunner:
             token_usage=total_usage,
             tool_calls_count=tool_calls_count,
         )
-        self._finalize_session(result)
+        self._finalize_session(result, messages)
         return result
 
-    def _finalize_session(self, result: RunResult) -> None:
-        """End the session in storage and optionally export to Markdown."""
+    def _finalize_session(self, result: RunResult, messages: list[dict] = None) -> None:
+        """End the session in storage, trigger memory reflection, and export."""
         self.session_store.end_session(
             session_id=result.session_id,
             status=result.status,
             total_tokens=result.token_usage.total_tokens,
             tool_calls_count=result.tool_calls_count,
         )
+
+        # Memory reflection (only for completed sessions)
+        if messages:
+            self.memory_manager.on_session_end(
+                result.session_id, messages, result.status,
+            )
+
         if self.auto_export:
             self.session_exporter.export_on_session_end(
                 result.session_id,

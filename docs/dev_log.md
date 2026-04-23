@@ -73,3 +73,36 @@ E2E tested: main agent delegated code writing to code subagent, then ran the
 produced script. Sessions correctly linked in storage, both exported to Markdown.
 
 Next: Implement memory system (P4)
+
+### Phase 4: Memory System (P4) (COMPLETED)
+
+Implemented three-layer memory system with LLM-based reflection:
+
+**MemoryProvider ABC** (`memory/provider.py`):
+- Abstract interface with store/retrieve/lifecycle hooks
+- Extensible for future vector DB backend
+
+**FileMemoryProvider** (`memory/file_provider.py`):
+- File-system storage: individual .md files per memory, organized by type
+- index.json for fast lookup
+- Three-signal retrieval: tag_score × 0.4 + keyword_score × 0.4 + recency_score × 0.2
+- Recency uses exponential decay (7-day half-life)
+- Semantic/procedural conflict detection: >80% tag overlap triggers update instead of new entry
+
+**MemoryManager** (`memory/manager.py`):
+- Orchestrates provider + lifecycle hooks
+- Post-session reflection: uses LLM to extract episodic/semantic/procedural memories
+- Pre-compression rescue: extracts errors from tool results before context compression
+- Only reflects on successfully completed sessions
+
+**Memory Tools** (`tools/memory_tools.py`):
+- store_memory: explicit memory creation by agent
+- recall_memory: semantic search across all memory types
+- Connected to MemoryManager via module-level injection
+
+**Runner integration**:
+- on_session_start: prefetch + inject memory block into system prompt
+- on_pre_compress: rescue info before compression
+- on_session_end: trigger LLM reflection (completed sessions only)
+
+Next: Implement skill system (P5)
