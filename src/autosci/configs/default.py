@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
     },
     "skills": {
         "dirs": ["~/.autosci/skills/", "./skills/"],
+        "include_builtin": True,
     },
 }
 

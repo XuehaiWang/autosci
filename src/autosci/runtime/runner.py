@@ -75,6 +75,7 @@ class AgentRunner:
         skills_config = config.get("skills", {})
         self.skill_engine = SkillEngine(
             skill_dirs=skills_config.get("dirs", ["~/.autosci/skills/", "./skills/"]),
+            include_builtin=skills_config.get("include_builtin", True),
         )
 
         # Inject skill engine into skill tools
