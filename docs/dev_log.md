@@ -44,3 +44,32 @@ Implemented two modules and integrated them into the runner:
 - Auto-exports to `./sessions/*.md`
 
 Next: Implement delegation (P3)
+
+### Phase 3: Delegation + Subagents (P3) (COMPLETED)
+
+Implemented agent delegation mechanism and 5 research subagents:
+
+**Delegate tool** (`tools/agent_tools.py`):
+- `delegate`: spawns a child agent run with isolated budget and linked session
+- `ask_user`: interactive user input during agent execution
+- Both are "runner-intercepted" — schemas registered in ToolRegistry for LLM visibility,
+  but actual execution handled by AgentRunner
+
+**Runner integration**:
+- `_RUNNER_TOOLS` set identifies tools intercepted before registry dispatch
+- `_handle_delegate()`: looks up subagent from registry, runs with child context,
+  returns result to parent agent
+- Child sessions automatically linked to parent via `parent_session_id`
+- Each subagent gets its own Markdown export
+
+**5 Subagents** (`agents/subagents/`):
+- `research`: literature search, paper reading, knowledge synthesis
+- `experiment`: experiment design, parameter selection
+- `code`: implementation, debugging, testing (max_iterations=50)
+- `analysis`: data analysis, statistical testing
+- `write`: paper/report writing
+
+E2E tested: main agent delegated code writing to code subagent, then ran the
+produced script. Sessions correctly linked in storage, both exported to Markdown.
+
+Next: Implement memory system (P4)

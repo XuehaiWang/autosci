@@ -29,6 +29,9 @@ class AgentRunner:
     compression (pluggable ContextEngine).
     """
 
+    # Tools intercepted by the runner instead of dispatched to the registry
+    _RUNNER_TOOLS = {"delegate", "ask_user"}
+
     def __init__(self, config: dict):
         self.config = config
         self.llm_client = LLMClient(config["llm"])
@@ -185,7 +188,14 @@ class AgentRunner:
             for tc in response.tool_calls:
                 tool_calls_count += 1
                 logger.info(f"  [{iteration}] Tool: {tc.name}")
-                result_str = tool_registry.dispatch(tc.name, tc.arguments)
+
+                if tc.name in self._RUNNER_TOOLS:
+                    result_str = self._handle_agent_tool(
+                        tc.name, tc.arguments, context,
+                    )
+                else:
+                    result_str = tool_registry.dispatch(tc.name, tc.arguments)
+
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": tc.id,
@@ -255,6 +265,79 @@ class AgentRunner:
     def _get_tool_definitions(self, agent) -> list[dict]:
         """Get tool definitions filtered by agent's allowed tools."""
         if agent.tools:
-            return tool_registry.get_definitions(names=agent.tools)
+            # Always include agent tools (delegate, ask_user) for the main agent
+            names = list(agent.tools)
+            for tool_name in self._RUNNER_TOOLS:
+                if tool_name not in names:
+                    names.append(tool_name)
+            return tool_registry.get_definitions(names=names)
         else:
             return tool_registry.get_definitions()
+
+    def _handle_agent_tool(self, name: str, args: dict, context: RunContext) -> str:
+        """Handle runner-intercepted tools (delegate, ask_user)."""
+        if name == "delegate":
+            return self._handle_delegate(args, context)
+        elif name == "ask_user":
+            return self._handle_ask_user(args)
+        return f"Error: unknown agent tool: {name}"
+
+    def _handle_delegate(self, args: dict, parent_context: RunContext) -> str:
+        """Spawn a child agent run for delegation.
+
+        Creates a new session linked to the parent, runs the subagent with
+        its own iteration budget, and returns the result.
+        """
+        agent_name = args.get("agent", "")
+        task = args.get("task", "")
+        extra_context = args.get("context", "")
+
+        if not agent_name or not task:
+            return "Error: delegate requires 'agent' and 'task' arguments"
+
+        # Look up the subagent
+        try:
+            agent_class = agent_registry.get(agent_name)
+        except KeyError as e:
+            return str(e)
+
+        agent = agent_class()
+
+        # Build the full task with context
+        full_task = task
+        if extra_context:
+            full_task = f"{task}\n\n## Context\n\n{extra_context}"
+
+        logger.info(f"Delegating to '{agent_name}': {task[:80]}")
+
+        # Run the subagent with a child context
+        child_result = self.run(
+            agent=agent,
+            task=full_task,
+            parent_context=parent_context,
+        )
+
+        # Format the result for the parent agent
+        status_note = ""
+        if child_result.status != "completed":
+            status_note = f"\n[Note: subagent ended with status '{child_result.status}']"
+
+        return (
+            f"[Subagent '{agent_name}' result]{status_note}\n\n"
+            f"{child_result.response}"
+        )
+
+    def _handle_ask_user(self, args: dict) -> str:
+        """Ask the user a question via stdin."""
+        question = args.get("question", "")
+        if not question:
+            return "Error: ask_user requires a 'question' argument"
+
+        print(f"\n{'=' * 60}")
+        print(f"Agent asks: {question}")
+        print(f"{'=' * 60}")
+        try:
+            answer = input("Your answer: ").strip()
+            return answer if answer else "(no answer provided)"
+        except (EOFError, KeyboardInterrupt):
+            return "(user declined to answer)"
