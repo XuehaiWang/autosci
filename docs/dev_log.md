@@ -19,3 +19,28 @@ Key findings:
 - System prompt is composable (identity + memory + skills + platform + environment)
 
 Next: Define autosci overall architecture (Phase 2)
+
+### Phase 2: Session Storage + Context Engine (P2) (COMPLETED)
+
+Implemented two modules and integrated them into the runner:
+
+**Session Storage** (`storage/`):
+- `SessionStore`: SQLite-backed storage with WAL mode and FTS5 full-text search
+- Tables: sessions (with lineage), messages (with FTS index)
+- `SessionExporter`: auto-exports completed sessions to Markdown files
+- Markdown output includes YAML frontmatter, chronological messages, tool calls as code blocks
+
+**Context Engine** (`context/`):
+- `ContextEngine` ABC: pluggable compression interface
+- `SummarizationCompressor`: three-zone protection (head/middle/tail)
+  - Tool result pruning for old results
+  - LLM-based or fallback extractive summarization
+  - Anti-thrashing: skips if recent compressions saved < 10%
+
+**Runner integration**:
+- Creates sessions on run start, persists every message
+- Checks compression after each turn via context engine
+- Finalizes session (end + export) on completion/error/budget exhaustion
+- Auto-exports to `./sessions/*.md`
+
+Next: Implement delegation (P3)
