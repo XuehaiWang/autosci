@@ -1,6 +1,6 @@
 # AutoSci 架构文档
 
-> 版本：v0.2.0
+> 版本：v0.3.0
 > 更新：2026-04-28
 
 ---
@@ -148,9 +148,45 @@ src/autosci/
 
 ## 3. 执行模式
 
-`autosci task` 支持两种研究模式，共享同一套 AgentRunner 和 TaskUnderstanding：
+autosci 支持两种顶层模式，共享同一套 AgentRunner 基础设施：
 
-### 3.1 Agent-driven 模式（默认）
+### 3.1 Assistant 模式（默认）
+
+个人 AI 助手，轻量工具集，无 workspace 概念，专注于学习用户习惯：
+
+```
+autosci                   ← 交互式 REPL（绿色 banner）
+autosci "what is X"       ← 单次执行
+
+Agent: AssistantAgent（14 个工具，无 delegate/create_agent/update_claim）
+Memory: ~/.autosci/memory/  ← 全局记忆
+Reflection: 偏向提取用户习惯、偏好、常用工具
+```
+
+### 3.2 Scientist 模式（原 task 模式）
+
+研究任务模式，workspace 感知，子 agent 编排，支持 workflow pipeline：
+
+```
+autosci scientist "reproduce X" -w ./workspace
+
+Agent: MainAgent（所有工具，含 delegate/create_agent/update_claim）
+Workspace: ./workspace/
+└── .autosci/             ← 框架内部文件（sessions.db, trajectory/, memory/）
+    ├── sessions.db
+    ├── trajectory/
+    ├── memory/
+    │   ├── episodic/
+    │   ├── semantic/
+    │   └── procedural/
+    └── sessions/
+data/                     ← 用户可见研究目录（在 workspace 根）
+code/
+outputs/
+report/images/
+```
+
+#### Agent-driven 子模式（默认）
 
 ```
 TaskUnderstanding → TaskPlan
@@ -161,9 +197,7 @@ MainAgent.run(task + task_plan.to_prompt_block())
   按需 delegate 子 agent，用 update_claim 更新 Claim 状态
 ```
 
-适合开放性研究任务，agent 自主决定研究路径。
-
-### 3.2 Workflow-driven 模式（`--workflow <name>`）
+#### Workflow-driven 子模式（`--workflow <name>`）
 
 ```
 TaskUnderstanding → TaskPlan
@@ -252,6 +286,7 @@ runner._handle_delegate()
 
 ```
 BaseAgent (ABC)
+    ├── AssistantAgent     — Python 实现，个人助手 system prompt，限定 14 个工具
     ├── MainAgent          — Python 实现，动态 system prompt（含子 agent 列表）
     ├── TaskUnderstandingAgent  — Python 实现，产出 TaskPlan
     └── DynamicAgent       — YAML 驱动，system_prompt 静态字符串
@@ -265,9 +300,21 @@ BaseAgent (ABC)
 **什么时候用 Python 实现，什么时候用 YAML？**
 
 - YAML：system prompt 是静态字符串，工具列表固定 → 绝大多数子 agent
-- Python：需要运行时动态生成 system prompt（如注入子 agent 列表、workspace 状态）→ MainAgent、TaskUnderstandingAgent
+- Python：需要运行时动态生成 system prompt（如注入子 agent 列表、workspace 状态）→ MainAgent、AssistantAgent、TaskUnderstandingAgent
 
-### 5.2 MainAgent
+### 5.2 AssistantAgent
+
+| 属性 | 值 |
+|------|-----|
+| `name` | `"assistant"` |
+| `tools` | `["read_file", "write_file", "list_dir", "glob", "grep", "execute_command", "web_search", "web_fetch", "store_memory", "recall_memory", "list_skills", "view_skill", "create_skill", "ask_user"]`（14 个）|
+| `max_iterations` | `50` |
+
+System prompt 侧重个人助手风格：帮助日常任务、学习用户习惯与偏好、直接执行（不必要时不询问）。无 `delegate`、`create_agent`、`update_claim`（助手模式不编排子 agent）。
+
+Memory reflection 偏向提取：用户偏好、工作习惯、常用工具、个人语境。
+
+### 5.3 MainAgent（Scientist 模式）
 
 | 属性 | 值 |
 |------|-----|
@@ -275,9 +322,13 @@ BaseAgent (ABC)
 | `tools` | `[]`（空 = 无限制，访问所有工具）|
 | `max_iterations` | `100` |
 
-System prompt 包含：工作区布局说明、6 步研究工作流（Understand → Survey → Plan → Implement → Analyze → Report）、所有工具使用指南、Claim 驱动研究的核心原则。
+System prompt 包含：工作区布局说明（含 `.autosci/` 内部目录）、6 步研究工作流（Understand → Survey → Plan → Implement → Analyze → Report）、所有工具使用指南、Claim 驱动研究的核心原则。
 
-### 5.3 内置子 Agent（YAML）
+Memory reflection 偏向提取：研究发现、实验结果、有效方法论。
+
+子 agent 列表中自动排除 `assistant` 和 `task_understanding`（内部 agent，不对主 agent 暴露）。
+
+### 5.4 内置子 Agent（YAML）
 
 | Agent | 额外工具 | max_iter | 职责 |
 |-------|----------|----------|------|
@@ -289,7 +340,7 @@ System prompt 包含：工作区布局说明、6 步研究工作流（Understand
 
 所有子 agent 均有 `read_file / write_file / list_dir / glob / grep / execute_command`。
 
-### 5.4 AgentRegistry（`agents/registry.py`）
+### 5.5 AgentRegistry（`agents/registry.py`）
 
 两种注册方式：
 
@@ -480,7 +531,7 @@ workspace/trajectory/
 ```
 MemoryManager
     └── FileMemoryProvider
-            └── workspace/memory/（task 模式）或 ~/.autosci/memory/（全局）
+            └── workspace/.autosci/memory/（scientist 模式）或 ~/.autosci/memory/（assistant 全局）
                 ├── episodic/    mem_*.md   （发生了什么）
                 ├── semantic/    mem_*.md   （学到了什么知识）
                 ├── procedural/  mem_*.md   （怎么做更有效）
@@ -493,7 +544,7 @@ MemoryManager
 |------|----------|------|
 | session 开始 | 每次 `runner.run()` | 检索相关记忆注入 system prompt |
 | 压缩前 | `on_pre_compress()` | 扫描即将被压缩的 tool_result，发现错误/异常 → 存 episodic 记忆 |
-| session 结束 | status == "completed" | LLM 反思整个历史，提取 ≤5 条记忆写入文件 |
+| session 结束 | status == "completed" | LLM 反思整个历史，提取 ≤5 条记忆写入文件（assistant 模式：提取用户习惯；scientist 模式：提取研究发现）|
 
 ### 10.3 检索评分
 
@@ -609,8 +660,8 @@ skills:
   include_builtin: true
   dirs: [~/.autosci/skills/, ./skills/]
 
-task:
-  workspace: ~              # task 模式工作目录
+scientist:
+  workspace: ~              # scientist 模式工作目录
   enable_trajectory: true
   enable_understanding: true
 ```
@@ -622,14 +673,14 @@ task:
 ### `autosci`（`cli.py`）
 
 ```bash
-# 助手模式
-autosci                              # 交互式 REPL（TUI）
-autosci "research task"              # 单次执行
+# 助手模式（默认，AssistantAgent，绿色 TUI）
+autosci                              # 交互式 REPL
+autosci "what is X"                  # 单次执行
 
-# 研究任务模式
-autosci task "reproduce paper X" -w ./workspace
-autosci task --from-file task.md -w ./workspace
-autosci task "..." -w ./workspace --workflow reproduce
+# 科学家模式（MainAgent，蓝色 TUI）
+autosci scientist "reproduce X" -w ./workspace
+autosci scientist --from-file task.md -w ./workspace
+autosci scientist "..." -w ./workspace --workflow reproduce
 
 # 管理命令
 autosci --init                       # 初始化 ~/.autosci/
@@ -639,13 +690,15 @@ autosci agent list                   # 列出已注册 agent
 autosci agent add researcher         # 安装内置模板到 ~/.autosci/agents/
 ```
 
-**研究任务模式执行流程：**
+**科学家模式执行流程：**
 
 ```
 _bootstrap()          ← 注册所有工具 + agent（含 YAML 内置模板）
 load_config()
-_init_task_workspace(workspace)   ← 创建 data/ code/ outputs/ report/ trajectory/ 等
-TaskUnderstanding.analyze(task)   ← 生成 TaskPlan，保存 task_plan.json
+_init_scientist_workspace(workspace)
+  ├── workspace/.autosci/{trajectory,memory/*,sessions}/
+  └── workspace/{data,code,outputs,report/images}/
+TaskUnderstanding.analyze(task)   ← 生成 TaskPlan，保存 .autosci/task_plan.json
         ↓
   --workflow?
   ├── 是 → WorkflowEngine.run(workflow_def, task, task_plan)

@@ -189,3 +189,39 @@ Redesigned task understanding from a single LLM call into a full subagent with t
 - `_run_task()`: runner created before TaskUnderstanding (shared); recorder created before runner
 - Removed `LLMClient` import from `_run_task()` (no longer needed for understanding)
 - Task plan Panel updated to show RQs + Claims counts (no longer references old `subtasks` field)
+
+### Two-mode redesign: Assistant + Scientist (COMPLETED)
+
+Renamed "task mode" → "scientist mode" and introduced a dedicated assistant mode with separate agent, tool set, and memory reflection.
+
+**AssistantAgent** (`agents/assistant_agent.py`, NEW):
+- 14-tool restricted allowlist: file I/O, terminal, web, memory, skills, ask_user
+- No `delegate`, `create_agent`, `update_claim` (assistant mode does not orchestrate subagents)
+- Personal assistant system prompt: warm, habit-learning, direct execution without unnecessary questions
+- max_iterations=50
+
+**Tool isolation fix** (`runtime/runner.py`):
+- `_get_tool_definitions` no longer auto-appends all `_RUNNER_TOOLS` to restricted agents
+- When `agent.tools` is non-empty, returns exactly those tools (no leakage of delegate/create_agent)
+
+**Project-level `.autosci/` workspace** (`cli.py`):
+- `_init_scientist_workspace(workspace)` → `(workspace, autosci_dir)` where `autosci_dir = workspace/.autosci/`
+- Internal dirs inside `.autosci/`: `trajectory/`, `memory/{episodic,semantic,procedural}/`, `sessions/`, `sessions.db`
+- Research dirs at workspace root (user-visible): `data/`, `code/`, `outputs/`, `report/images/`
+
+**Mode-aware memory reflection** (`memory/manager.py`):
+- `on_session_end(session_id, messages, mode="scientist")` — new `mode` parameter
+- Assistant mode: reflection prompt biased toward user habits, preferences, recurring workflows
+- Scientist mode: reflection prompt biased toward research findings, effective methodologies
+
+**REPL mode display** (`runtime/repl.py`):
+- `REPL.__init__` accepts `mode: str = "assistant"` parameter
+- Green banner ("AutoSci Assistant") for assistant mode; blue banner ("AutoSci Scientist") for scientist mode
+- Skill matching query differs: "general tasks" (assistant) vs "general research" (scientist)
+
+**Config rename** (`configs/default.py`): `config["task"]` → `config["scientist"]`
+
+**Other cleanups**:
+- MainAgent filters `assistant` and `task_understanding` from subagent list shown to LLM
+- `bench.py` `_bootstrap()`: added `assistant_agent` import + docstring
+- Commit: `eb09188 feat: two-mode redesign (assistant + scientist)`
