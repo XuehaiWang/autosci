@@ -1,667 +1,671 @@
-# autosci Architecture Design
+# AutoSci 架构文档
 
-> Status: DRAFT — Pending review
-> Date: 2026-04-23
+> 版本：v0.2.0
+> 更新：2026-04-28
 
-## 1. Design Goals
+---
 
-autosci is an agent framework for **end-to-end scientific research tasks**. Core goals:
+## 目录
 
-1. **Research-oriented**: support the full research lifecycle (literature → hypothesis → experiment → analysis → writing)
-2. **Flexible workflow**: main agent dynamically decides which subagents to invoke; workflow is NOT hardcoded
-3. **Minimal & decoupled**: each module has clear boundaries; easy to extend without touching core
-4. **Reproducible**: every agent run produces traceable, replayable records
-5. **Evolvable**: the agent learns from past research sessions and improves over time
+1. [整体架构](#1-整体架构)
+2. [目录结构](#2-目录结构)
+3. [执行模式](#3-执行模式)
+4. [核心执行引擎](#4-核心执行引擎)
+5. [Agent 体系](#5-agent-体系)
+6. [任务理解系统](#6-任务理解系统)
+7. [工具系统](#7-工具系统)
+8. [Workflow 引擎](#8-workflow-引擎)
+9. [Trajectory 系统](#9-trajectory-系统)
+10. [记忆系统](#10-记忆系统)
+11. [上下文压缩](#11-上下文压缩)
+12. [技能系统](#12-技能系统)
+13. [配置系统](#13-配置系统)
+14. [入口点](#14-入口点)
 
-## 2. Architecture Overview
+---
+
+## 1. 整体架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Entry Points                         │
-│                    (CLI / Script / API)                      │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────┐
-│                      Runtime Layer                          │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  AgentRunner  │  │ PromptBuilder│  │  ErrorHandler    │  │
-│  │  (while-loop) │  │              │  │                  │  │
-│  └──────┬───────┘  └──────────────┘  └──────────────────┘  │
-│         │                                                    │
-│  ┌──────▼───────┐                                           │
-│  │  LLM Client  │  (Anthropic / OpenAI / local)             │
-│  └──────────────┘                                           │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────┐
-│                     Agent Layer                              │
-│  ┌──────────────┐  ┌───────────────────────────────────┐    │
-│  │  Main Agent   │  │          Subagent Pool             │    │
-│  │  (Orchestrator│──│  ┌─────────┐ ┌─────────┐ ┌─────┐ │    │
-│  │   & Planner)  │  │  │Research │ │Experiment│ │Write│ │    │
-│  └──────────────┘  │  │  Agent  │ │  Agent   │ │Agent│ │    │
-│                     │  └─────────┘ └─────────┘ └─────┘ │    │
-│                     │  ┌─────────┐ ┌─────────┐         │    │
-│                     │  │Analysis │ │  Code   │         │    │
-│                     │  │  Agent  │ │  Agent  │         │    │
-│                     │  └─────────┘ └─────────┘         │    │
-│                     └───────────────────────────────────┘    │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────▼────────────────────────────────────┐
-│                   Capability Layer                           │
-│  ┌──────────┐ ┌────────┐ ┌────────┐ ┌──────┐ ┌──────────┐ │
-│  │  Tools   │ │Context │ │ Memory │ │Skills│ │ Storage  │ │
-│  │ Registry │ │ Engine │ │Manager │ │Engine│ │ (Session)│ │
-│  └──────────┘ └────────┘ └────────┘ └──────┘ └──────────┘ │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                        Entry Points                          │
+│     autosci (CLI/REPL)      autosci-bench (benchmark)        │
+└───────────────────────┬──────────────────────────────────────┘
+                        │ _bootstrap() + config
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│                    Task Understanding                        │
+│   TaskUnderstanding → TaskUnderstandingAgent → TaskPlan      │
+│   (goal / ResearchQuestions / Claims / suggested_agents)     │
+└───────────────────────┬──────────────────────────────────────┘
+                        │ task + TaskPlan
+          ┌─────────────┴─────────────┐
+          ▼                           ▼
+  Agent-driven mode           Workflow-driven mode
+  MainAgent runs              WorkflowEngine phases
+  free-form research          agent-per-phase pipeline
+          │                           │
+          └─────────────┬─────────────┘
+                        ▼
+┌──────────────────────────────────────────────────────────────┐
+│                      AgentRunner                             │
+│  LLMClient │ PromptBuilder │ ContextEngine │ MemoryManager   │
+│  ToolRegistry │ SkillEngine │ TrajectoryRecorder             │
+│  ─────────────────────────────────────────────────────────── │
+│  while-loop: LLM call → tool dispatch → tool results → ...   │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## 3. Module Design
+设计哲学：**minimal, decoupled, extensible**
 
-### 3.1 Runtime Layer (`src/autosci/runtime/`)
+- `AgentRunner` 是唯一执行引擎，对 agent 类型、工具集、LLM provider 均无硬依赖
+- 所有子系统通过接口（ABC）或注册表解耦，可独立替换
+- 主 agent 委派子 agent 时，调用同一个 runner 实例的 `run()`，共享所有子系统
 
-**AgentRunner** — the core while-loop that drives agent execution.
+---
+
+## 2. 目录结构
+
+```
+src/autosci/
+├── agents/
+│   ├── base.py              # BaseAgent ABC
+│   ├── registry.py          # AgentRegistry（YAML 自发现）
+│   ├── dynamic_agent.py     # DynamicAgent（YAML → 实例）
+│   ├── main_agent.py        # MainAgent（编排者，Python 实现）
+│   └── templates/           # 内置 YAML agent 定义（开箱即用）
+│       ├── researcher.yaml
+│       ├── analyst.yaml
+│       ├── coder.yaml
+│       ├── writer.yaml
+│       └── experiment.yaml
+│
+├── task/
+│   ├── schemas.py           # TaskPlan / Claim / ResearchQuestion
+│   ├── agent.py             # TaskUnderstandingAgent
+│   └── understanding.py     # TaskUnderstanding（编排入口）
+│
+├── workflow/
+│   ├── schemas.py           # WorkflowDef / PhaseSpec / WorkflowResult
+│   ├── engine.py            # WorkflowEngine（拓扑调度）
+│   └── templates/           # 内置 workflow YAML 定义
+│       ├── reproduce.yaml
+│       └── survey.yaml
+│
+├── runtime/
+│   ├── runner.py            # AgentRunner（核心 while-loop）
+│   ├── llm_client.py        # LLM 调用（anthropic / openai-compat）
+│   ├── prompt_builder.py    # system prompt 拼装
+│   ├── error_handler.py     # 错误分类 + 指数退避重试
+│   └── repl.py              # 交互式 TUI REPL
+│
+├── tools/
+│   ├── registry.py          # ToolRegistry（自注册）
+│   ├── file_tools.py        # read_file / write_file / list_dir / glob / grep
+│   ├── terminal_tool.py     # execute_command
+│   ├── web_tools.py         # web_search / web_fetch
+│   ├── agent_tools.py       # delegate / create_agent / ask_user / update_claim
+│   ├── memory_tools.py      # store_memory / recall_memory
+│   └── skill_tools.py       # list_skills / view_skill / create_skill
+│
+├── trajectory/
+│   ├── schemas.py           # AgentSpan / TrajectoryEvent
+│   ├── recorder.py          # TrajectoryRecorder（events.jsonl + spans.json）
+│   └── exporter.py          # 导出为可读报告
+│
+├── memory/
+│   ├── provider.py          # MemoryProvider ABC + MemoryEntry
+│   ├── manager.py           # MemoryManager（生命周期协调）
+│   └── file_provider.py     # FileMemoryProvider（文件系统存储）
+│
+├── context/
+│   ├── engine.py            # ContextEngine ABC
+│   └── compressor.py        # SummarizationCompressor（三区压缩）
+│
+├── skills/
+│   └── engine.py            # SkillEngine（发现 + 匹配 + 创建）
+│
+├── storage/
+│   ├── session_store.py     # SessionStore（SQLite WAL + FTS5）
+│   └── exporter.py          # SessionExporter（Markdown 导出）
+│
+├── protocols/
+│   └── schemas.py           # RunContext / RunResult / LLMResponse 等
+│
+├── configs/
+│   └── default.py           # 默认配置 + YAML 加载（deep merge）
+│
+├── builtin_skills/          # 内置技能（随 pip 包分发）
+│   ├── literature_review.md
+│   ├── experiment_design.md
+│   └── data_analysis.md
+│
+├── cli.py                   # autosci 命令入口
+└── bench.py                 # autosci-bench 命令入口（benchmark 适配）
+```
+
+---
+
+## 3. 执行模式
+
+`autosci task` 支持两种研究模式，共享同一套 AgentRunner 和 TaskUnderstanding：
+
+### 3.1 Agent-driven 模式（默认）
+
+```
+TaskUnderstanding → TaskPlan
+        ↓
+MainAgent.run(task + task_plan.to_prompt_block())
+        ↓
+  自由规划研究流程：survey → plan → implement → analyze → report
+  按需 delegate 子 agent，用 update_claim 更新 Claim 状态
+```
+
+适合开放性研究任务，agent 自主决定研究路径。
+
+### 3.2 Workflow-driven 模式（`--workflow <name>`）
+
+```
+TaskUnderstanding → TaskPlan
+        ↓
+WorkflowEngine.run(workflow_def, task, task_plan)
+        ↓
+  按 phases 拓扑顺序调度：每个 phase 指定 agent + goal
+  上游 phase 输出 + TaskPlan 注入下游 phase 的 task 字符串
+```
+
+适合结构固定的研究流程（如复现论文、文献综述），可通过 YAML 定制 pipeline。
+
+内置 workflow 模板：
+
+| 模板 | phases | 适用场景 |
+|------|--------|----------|
+| `reproduce` | literature → implementation → experiment → analysis → report | 论文复现 |
+| `survey` | scope → deep_read → synthesis → report | 文献综述 |
+
+---
+
+## 4. 核心执行引擎
+
+### 4.1 AgentRunner（`runtime/runner.py`）
+
+系统中枢。`run(agent, task)` 接受任意 `BaseAgent` 子类，驱动完整的 while-loop：
+
+```
+runner.run(agent, task)
+│
+├── 初始化：session_store, context_engine, memory_manager, skill_engine, trajectory
+├── 检索相关记忆 → memory_block（top-10，三信号评分）
+├── 匹配相关技能 → skills_block（top-3，只注入摘要）
+├── PromptBuilder.build_system_prompt(agent, ...)
+├── tool_defs = tool_registry.get_definitions(agent.tools)
+│
+└── for iteration in range(max_iterations):
+    ├── LLMClient.chat(messages, system_prompt, tool_defs)
+    ├── 无 tool_calls → RunResult(status="completed") → _finalize_session()
+    ├── 有 tool_calls:
+    │   ├── name in _RUNNER_TOOLS → runner 直接处理（见下）
+    │   └── 其他 → tool_registry.dispatch(name, args)
+    └── context_engine.should_compress() → 三区压缩
+```
+
+**Runner 拦截工具（`_RUNNER_TOOLS`）**：
+
+这些工具向 LLM 暴露 schema（在工具列表中可见），但执行时由 runner 处理，不经过 ToolRegistry：
+
+| 工具 | 作用 |
+|------|------|
+| `delegate` | 以子 agent 身份调用 `self.run(child_agent, task)`，共享 runner 状态 |
+| `create_agent` | 内联定义并立即运行一个临时 agent |
+| `ask_user` | 暂停执行，从 stdin 读取用户输入 |
+| `update_claim` | 读取 `task_plan.json` → 更新 Claim 状态 → 写回 → 记录 trajectory 事件 |
+
+### 4.2 委派（Delegation）
+
+```
+主 agent 调用 delegate(agent="researcher", task="...")
+        ↓
+runner._handle_delegate()
+  ├── agent_registry.get("researcher") → DynamicAgent 实例
+  └── self.run(agent, task, parent_context=context)
+      ├── session_store.create_session(parent_session_id=parent_sid)
+      ├── [子 agent 完整 while-loop]
+      └── _finalize_session() → 返回 child_result.response 给主 agent
+
+主 agent 收到子 agent 结果，继续下一轮迭代（串行）
+```
+
+### 4.3 LLMClient（`runtime/llm_client.py`）
+
+内部统一使用 Anthropic 消息格式。支持两种 provider：
+
+- `anthropic`：调用 Anthropic SDK，原生格式
+- `openai`：调用 OpenAI-compatible API（代理、本地 LLM 等），内部转换格式
+
+切换 provider 只改配置，runner 和 agent 无感知。
+
+---
+
+## 5. Agent 体系
+
+### 5.1 层次结构
+
+```
+BaseAgent (ABC)
+    ├── MainAgent          — Python 实现，动态 system prompt（含子 agent 列表）
+    ├── TaskUnderstandingAgent  — Python 实现，产出 TaskPlan
+    └── DynamicAgent       — YAML 驱动，system_prompt 静态字符串
+            ├── researcher
+            ├── analyst
+            ├── coder
+            ├── writer
+            └── experiment
+```
+
+**什么时候用 Python 实现，什么时候用 YAML？**
+
+- YAML：system prompt 是静态字符串，工具列表固定 → 绝大多数子 agent
+- Python：需要运行时动态生成 system prompt（如注入子 agent 列表、workspace 状态）→ MainAgent、TaskUnderstandingAgent
+
+### 5.2 MainAgent
+
+| 属性 | 值 |
+|------|-----|
+| `name` | `"main"` |
+| `tools` | `[]`（空 = 无限制，访问所有工具）|
+| `max_iterations` | `100` |
+
+System prompt 包含：工作区布局说明、6 步研究工作流（Understand → Survey → Plan → Implement → Analyze → Report）、所有工具使用指南、Claim 驱动研究的核心原则。
+
+### 5.3 内置子 Agent（YAML）
+
+| Agent | 额外工具 | max_iter | 职责 |
+|-------|----------|----------|------|
+| `researcher` | `web_search`, `web_fetch` | 30 | 文献搜索、论文阅读、知识综述 |
+| `analyst` | `web_search`, `web_fetch` | 35 | 数据分析、统计测试、可视化 |
+| `coder` | — | 40 | 代码实现、调试、测试 |
+| `writer` | `web_search`, `web_fetch` | 25 | 科学写作、报告撰写 |
+| `experiment` | — | 30 | 实验设计、参数选择、方法规划 |
+
+所有子 agent 均有 `read_file / write_file / list_dir / glob / grep / execute_command`。
+
+### 5.4 AgentRegistry（`agents/registry.py`）
+
+两种注册方式：
 
 ```python
-class AgentRunner:
-    """Core agent execution loop."""
+# 1. Python class（MainAgent 等）
+agent_registry.register(MainAgent)
 
-    def run(self, agent: BaseAgent, task: str, session_id: str = None) -> RunResult:
-        """
-        1. Initialize session (new or resume)
-        2. Build system prompt via PromptBuilder
-        3. Preflight context check
-        4. while budget_remaining and not interrupted:
-            a. Build API messages
-            b. Call LLM
-            c. If tool_calls: execute tools, append results
-            d. If text response: check if done or needs continuation
-            e. On error: classify → retry / compress / abort
-        5. Finalize session, return result
-        """
+# 2. YAML（DynamicAgent，_bootstrap 中自动加载）
+agent_registry.discover_yaml()
 ```
 
-Key design decisions:
-- Runner is agent-agnostic — it doesn't know if it's running the main agent or a subagent
-- Same runner instance can run any `BaseAgent` subclass
-- Runner owns the iteration budget, interrupt handling, and error recovery
-- Runner delegates prompt building, tool dispatch, and context compression to pluggable modules
+`discover_yaml()` 加载顺序（后者可覆盖同名 agent）：
 
-**PromptBuilder** — assembles system prompts from composable blocks.
+```
+1. src/autosci/agents/templates/*.yaml   ← 内置，开箱即用
+2. ~/.autosci/agents/*.yaml              ← 用户自定义/覆盖
+3. extra_dirs（调用方传入）
+```
+
+**扩展方式：**
+
+- 只需配置：在 `~/.autosci/agents/` 写一个 YAML，下次启动自动注册
+- 需要逻辑：继承 `BaseAgent`，实现 `get_system_prompt()`，末尾调用 `agent_registry.register(MyAgent)`
+
+---
+
+## 6. 任务理解系统
+
+### 6.1 数据结构（`task/schemas.py`）
+
+```
+TaskPlan
+├── raw_task: str              原始任务字符串
+├── mode: str                  "topic_only" | "task_given"
+├── goal: str                  一句话核心目标
+├── context: TaskContext       研究对象 / 数据类型 / 已知方法 / 关键词
+├── related_works: [RelatedWork]   文献：贡献 + 证据 + 边界/gap
+├── research_questions: [ResearchQuestion]   可回答的问题（来自 gap）
+├── claims: [Claim]            可验证的假设（核心研究命题）
+│       └── status: unverified | supported | refuted | partial
+└── suggested_agents: [str]    建议使用的子 agent 名称
+```
+
+**Claim 是研究议程的核心**：TaskUnderstanding 生成，MainAgent 通过 `update_claim` 工具在实验完成后更新状态（写回 `task_plan.json`，记录 trajectory 事件）。
+
+### 6.2 执行流程
+
+```
+TaskUnderstanding(runner, workspace).analyze(task)
+│
+├── detect_mode(task)
+│   ├── "topic_only"：任务较短且无方法关键词 → 偏向文献综述
+│   └── "task_given"：明确指定方法/目标 → 偏向实现/复现
+│
+├── 实例化 TaskUnderstandingAgent
+│   └── system prompt 包含：任务字符串 + workspace 现有文件列表
+│
+├── runner.run(agent, task)     ← 完整 agent loop，可调用 web_search 等工具
+│
+└── 解析 agent 输出 JSON → TaskPlan
+    └── save_task_plan(plan, workspace)  → workspace/task_plan.json
+```
+
+### 6.3 任务计划注入
+
+两种模式均注入 TaskPlan：
+
+- **Agent-driven**：`full_task = task + "\n\n" + task_plan.to_prompt_block()`
+- **Workflow-driven**：每个 phase 的 task 字符串中都插入 `task_plan.to_prompt_block()`
+
+---
+
+## 7. 工具系统
+
+### 7.1 注册机制
 
 ```python
-class PromptBuilder:
-    def build_system_prompt(self, agent: BaseAgent, context: RunContext) -> str:
-        """Assemble: agent identity + memory + skills + environment + task context"""
-
-    def build_api_messages(self, messages: list, context: RunContext) -> list:
-        """Create ephemeral API message copy with injected metadata"""
+# 模块级，import 时自动执行
+registry.register("read_file", READ_FILE_SCHEMA, read_file, toolset="file")
 ```
 
-**ErrorHandler** — classifies errors and determines recovery strategy.
+schema 是 Anthropic tool schema 格式（JSON Schema），直接传给 LLM。agent 的 `tools` 列表控制哪些工具对其可见。
 
-```python
-class ErrorHandler:
-    def classify(self, error: Exception) -> ClassifiedError: ...
-    def should_retry(self, classified: ClassifiedError) -> bool: ...
-    def should_compress(self, classified: ClassifiedError) -> bool: ...
+### 7.2 工具列表（17 个）
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| **file** | `read_file` | 读取文件内容 |
+| | `write_file` | 写入/创建文件 |
+| | `list_dir` | 列出目录内容 |
+| | `glob` | 文件名模式匹配 |
+| | `grep` | 正则搜索文件内容 |
+| **terminal** | `execute_command` | 执行 shell 命令 |
+| **web** | `web_search` | 网络搜索 |
+| | `web_fetch` | 抓取网页正文 |
+| **agent** | `delegate` | 委派子 agent（runner 拦截）|
+| | `create_agent` | 内联定义并运行临时 agent（runner 拦截）|
+| | `ask_user` | 向用户提问（runner 拦截）|
+| | `update_claim` | 更新 Claim 验证状态（runner 拦截）|
+| **memory** | `store_memory` | 手动存入记忆 |
+| | `recall_memory` | 手动检索记忆 |
+| **skill** | `list_skills` | 列出所有技能 |
+| | `view_skill` | 读取技能全文 |
+| | `create_skill` | 运行时创建新技能 |
+
+---
+
+## 8. Workflow 引擎
+
+### 8.1 YAML 定义格式
+
+```yaml
+name: reproduce
+description: "Paper reproduction pipeline"
+phases:
+  - id: literature
+    agent: researcher
+    goal: "Read and summarize the target paper..."
+  - id: implementation
+    agent: coder
+    goal: "Implement the algorithm described..."
+    depends_on: [literature]
+  - id: experiment
+    agent: experiment
+    goal: "Run experiments and record results..."
+    depends_on: [implementation]
+  - id: analysis
+    agent: analyst
+    goal: "Analyze results and compare with paper..."
+    depends_on: [experiment]
+  - id: report
+    agent: writer
+    goal: "Write the reproduction report..."
+    depends_on: [analysis]
 ```
 
-**LLMClient** — unified interface to LLM providers.
-
-```python
-class LLMClient:
-    def chat(self, messages: list, tools: list = None, **kwargs) -> LLMResponse: ...
-```
-
-Single implementation using `litellm` or direct API calls. Provider-specific logic stays inside this class.
-
-### 3.2 Agent Layer (`src/autosci/agents/`)
-
-**BaseAgent** — abstract base class for all agents.
-
-```python
-class BaseAgent(ABC):
-    name: str
-    role: str                    # role description for prompt
-    system_prompt: str           # agent-specific identity/instructions
-    tools: list[str]             # allowed tool names
-    max_iterations: int = 50
-
-    @abstractmethod
-    def get_system_prompt(self) -> str: ...
-```
-
-**AgentRegistry** — self-registration mechanism for agents (same pattern as ToolRegistry).
-
-```python
-class AgentRegistry:
-    """Discovers and manages available agents."""
-
-    def register(self, agent_class: type[BaseAgent]) -> None:
-        """Register an agent class. Called at module top level."""
-
-    def get(self, name: str) -> type[BaseAgent]:
-        """Look up an agent class by name. Used by delegate tool."""
-
-    def list_available(self) -> list[dict]:
-        """Return name + role for all registered agents. Injected into
-        MainAgent's system prompt so it knows what subagents exist."""
-
-    def discover(self, subagents_dir: str) -> None:
-        """Auto-import all modules in subagents/ to trigger self-registration."""
-
-agent_registry = AgentRegistry()  # singleton
-```
-
-Adding a new subagent = creating a new file in `agents/subagents/` with a `BaseAgent` subclass
-and calling `agent_registry.register()`. No other code changes needed. The MainAgent discovers
-available subagents at runtime via `agent_registry.list_available()`, which is injected into its
-system prompt.
-
-**MainAgent** (`agents/main_agent.py`) — the orchestrator.
-
-- Receives the research task from the user
-- Plans the research workflow dynamically
-- Delegates subtasks to subagents via a `delegate` tool
-- Synthesizes results from subagents
-- Makes high-level decisions about research direction
-- Has access to all tools + delegation capability
-- **Does NOT hardcode any subagent names** — it reads the available subagent list from its system prompt at runtime
-
-**Subagents** (`agents/subagents/`) — specialized research agents.
-
-Initial set (extensible — add more by creating new files):
-
-| Agent | Role | Core tools |
-|-------|------|------------|
-| ResearchAgent | Literature search, paper reading, knowledge synthesis | web_search, read_file, write_file |
-| ExperimentAgent | Experiment design, parameter selection | write_file, terminal |
-| CodeAgent | Implementation, debugging | write_file, terminal, read_file |
-| AnalysisAgent | Data analysis, result interpretation | terminal, read_file, write_file |
-| WriteAgent | Paper/report writing, formatting | write_file, read_file |
-
-Subagents are NOT hardcoded into the workflow. The main agent decides which subagents to invoke based on the task.
-
-**Delegation mechanism:**
-
-```python
-# Main agent uses "delegate" tool:
-{
-    "tool": "delegate",
-    "args": {
-        "agent": "code",          # subagent name
-        "task": "Implement the ...",
-        "context": "...",          # relevant context to pass
-        "workspace": "/path/to/..."
-    }
-}
-
-# Runner creates a child runner with:
-# - Isolated iteration budget
-# - Shared session storage (child session linked to parent)
-# - Subagent's own tool set and system prompt
-# - Parent context passed as initial message
-```
-
-### 3.3 Tool System (`src/autosci/tools/`)
-
-**Design**: self-registration pattern (inspired by hermes-agent).
-
-```python
-# tools/registry.py
-class ToolRegistry:
-    def register(self, name: str, schema: dict, handler: Callable,
-                 toolset: str = "default", check_fn: Callable = None): ...
-    def get_definitions(self, toolsets: list[str] = None) -> list[dict]: ...
-    def dispatch(self, name: str, args: dict) -> str: ...
-
-registry = ToolRegistry()  # singleton
-
-# tools/file_tools.py
-from autosci.tools.registry import registry
-
-def read_file(path: str, offset: int = 0, limit: int = 2000) -> str: ...
-
-registry.register(
-    name="read_file",
-    schema=READ_FILE_SCHEMA,
-    handler=read_file,
-    toolset="file",
-)
-```
-
-**Built-in toolsets:**
-
-| Toolset | Tools | Description |
-|---------|-------|-------------|
-| file | read_file, write_file, list_dir, glob, grep | File operations |
-| terminal | execute_command | Shell command execution |
-| web | web_search, web_fetch | Web search and page reading |
-| agent | delegate, ask_user | Agent delegation and user interaction |
-
-Tool results that exceed a size threshold are saved to disk with only a summary returned to context (inspired by hermes-agent's result storage pattern).
-
-### 3.4 Context Management (`src/autosci/context/`)
-
-**Design**: strategy pattern with abstract interface.
-
-```python
-class ContextEngine(ABC):
-    @abstractmethod
-    def should_compress(self, token_count: int) -> bool: ...
-
-    @abstractmethod
-    def compress(self, messages: list) -> list: ...
-
-class SummarizationCompressor(ContextEngine):
-    """Default: LLM-based lossy summarization.
-
-    Algorithm:
-    1. Protect head (system prompt, first exchange)
-    2. Protect tail (recent N tokens)
-    3. Prune old tool results (replace with summaries)
-    4. Summarize middle messages via LLM
-    5. Anti-thrashing: skip if last 2 compressions saved < 10%
-    """
-```
-
-### 3.5 Memory System (`src/autosci/memory/`)
-
-**Design**: provider-based orchestration (inspired by hermes-agent), with research-specific evolution.
-
-```python
-class MemoryProvider(ABC):
-    """Interface for memory backends."""
-
-    @abstractmethod
-    def get_system_prompt_block(self) -> str: ...
-
-    @abstractmethod
-    def store(self, key: str, content: str, memory_type: str) -> None: ...
-
-    @abstractmethod
-    def retrieve(self, query: str, memory_type: str = None) -> list[MemoryEntry]: ...
-
-    def on_session_end(self, session: Session) -> None: ...
-    def on_pre_compress(self, messages: list) -> None: ...
-
-class MemoryManager:
-    """Orchestrates memory providers."""
-    # Built-in file-based provider always active
-    # Optional external provider (vector DB, etc.) can be added
-```
-
-**Memory types** (research-oriented):
-
-| Type | Purpose | Example |
-|------|---------|---------|
-| episodic | What happened in past sessions | "In session X, experiment Y failed because of Z" |
-| semantic | Domain knowledge accumulated | "Dataset A has known quality issues with column B" |
-| procedural | Learned procedures/patterns | "For this type of analysis, use method X then Y" |
-
-**Evolution**: after each session, MemoryManager can optionally run a reflection step to extract and store insights from the session history.
-
-### 3.6 Skill System (`src/autosci/skills/`)
-
-Skills are **reusable research patterns** stored as markdown files with structured metadata.
+### 8.2 WorkflowEngine
 
 ```
-skills/
-├── literature_review.md
-├── hypothesis_generation.md
-├── experiment_template.md
-└── statistical_analysis.md
+WorkflowEngine.run(workflow_def, task, task_plan)
+│
+├── topological_order()    ← 处理 depends_on，确保执行顺序
+│
+└── for phase in phases:
+    ├── 检查依赖是否失败 → 跳过（skip）
+    ├── agent_registry.get(phase.agent)
+    ├── _build_phase_task(task, phase, upstream_results, task_plan)
+    │   └── task + task_plan.to_prompt_block() + phase.goal + 上游结果摘要
+    └── runner.run(agent, phase_task)
+        └── PhaseResult(status, output, tokens, tool_calls)
 ```
 
-**Skill format:**
+Phase 状态：`completed` / `error` / `skipped`（依赖失败时）
+
+整体状态：所有完成 → `completed`；全部失败 → `failed`；部分 → `partial`
+
+---
+
+## 9. Trajectory 系统
+
+### 9.1 结构
+
+```
+workspace/trajectory/
+├── events.jsonl    ← 追加写入的事件流（每个 tool call、agent 动作等）
+└── spans.json      ← 结构化的 agent 执行段
+```
+
+### 9.2 事件类型
+
+| event_type | 触发时机 |
+|------------|----------|
+| `workflow_start` | WorkflowEngine 开始 |
+| `task_plan` | TaskUnderstanding 完成，保存整个 TaskPlan |
+| `agent_start` / `agent_end` | runner.run() 进入/退出 |
+| `tool_call` / `tool_result` | 每次工具调用 |
+| `claim_update` | update_claim 执行，记录 old_status → new_status + evidence |
+| `llm_call` | 每次 LLM 请求（含 token 计数）|
+
+`claim_update` 事件是研究进度的核心审计轨迹：记录每条 Claim 从 `unverified` 到最终状态的完整证据链。
+
+---
+
+## 10. 记忆系统
+
+### 10.1 架构
+
+```
+MemoryManager
+    └── FileMemoryProvider
+            └── workspace/memory/（task 模式）或 ~/.autosci/memory/（全局）
+                ├── episodic/    mem_*.md   （发生了什么）
+                ├── semantic/    mem_*.md   （学到了什么知识）
+                ├── procedural/  mem_*.md   （怎么做更有效）
+                └── index.json
+```
+
+### 10.2 三个触发时机
+
+| 时机 | 触发条件 | 动作 |
+|------|----------|------|
+| session 开始 | 每次 `runner.run()` | 检索相关记忆注入 system prompt |
+| 压缩前 | `on_pre_compress()` | 扫描即将被压缩的 tool_result，发现错误/异常 → 存 episodic 记忆 |
+| session 结束 | status == "completed" | LLM 反思整个历史，提取 ≤5 条记忆写入文件 |
+
+### 10.3 检索评分
+
+```
+score = tag_score × 0.4 + keyword_score × 0.4 + recency_score × 0.2
+
+tag_score     = |query_keywords ∩ mem_tags| / |query_keywords|
+keyword_score = 在 summary 中匹配的关键词数 / 总关键词数
+recency_score = exp(-age / 7天)
+```
+
+### 10.4 冲突检测
+
+新存 semantic/procedural 记忆时，若与已有记忆 tag Jaccard 相似度 > 80%，更新已有记忆而非新建。
+
+---
+
+## 11. 上下文压缩
+
+### 触发条件
+
+```
+prompt_tokens > context_window × 0.75
+AND 最近 2 次压缩节省率不都 < 10%（防止 thrashing）
+```
+
+### 压缩流程
+
+```
+Step 1：预剪枝
+  非最近 6 条消息中，tool_result 超 500 字 → 截断
+
+Step 2：三区分割
+  HEAD（保护）= 前 2 条（原始任务 + 第一次响应）
+  TAIL（保护）= 末尾累积到 context_window × 0.3 为止
+  MIDDLE      = 中间区（待压缩）
+
+Step 3：LLM 摘要 MIDDLE
+  失败时 fallback：截取前 10 行 + 后 10 行
+
+Step 4：重组
+  result = HEAD + [summary_msg] + TAIL
+```
+
+---
+
+## 12. 技能系统
+
+### 技能文件格式
 
 ```markdown
 ---
 name: literature_review
-description: Systematic literature review process
-required_tools: [web_search, write_file]
-applicable_when: "user asks for literature review or survey"
+description: Systematic process for searching and synthesizing scientific literature
+tags: [literature, search, papers, review, synthesis]
 ---
 
-## Process
-1. Define search terms from the research question
-2. Search academic databases...
-3. ...
+## Literature Review Procedure
+1. ...
 ```
 
-**SkillEngine:**
+### 发现顺序
 
-```python
-class SkillEngine:
-    def discover(self, skills_dir: str) -> list[Skill]: ...
-    def match(self, task_description: str, available_skills: list[Skill]) -> list[Skill]: ...
-    def get_prompt_block(self, skills: list[Skill]) -> str: ...
+```
+builtin_skills/（内置，随 pip 分发）
+~/.autosci/skills/（用户全局）
+./skills/（项目级）
 ```
 
-Skills are injected into the system prompt when relevant. The agent can also create/update skills during execution.
+同名技能后扫描覆盖先扫描（用户可覆盖内置）。
 
-### 3.7 Session Storage (`src/autosci/storage/`)
+### 注入方式
 
-**Design**: hybrid approach — SQLite for runtime, Markdown export for human consumption.
+- **system prompt**：只注入 `name + description`（节省 token）
+- **全文**：agent 调用 `view_skill` 按需读取
 
-- **Runtime**: SQLite (fast writes, structured queries, FTS, atomic transactions)
-- **Post-session**: auto-export to Markdown (human-readable, git-friendly, reviewable)
-- Export is **one-way** (SQLite → Markdown), no reverse sync needed
+### 运行时创建
 
-```python
-class SessionStore:
-    """SQLite-backed session and message storage."""
+agent 调用 `create_skill` → 写入 `~/.autosci/skills/` → 当前 session 立即可用 → 下次 session 自动发现。
 
-    def create_session(self, metadata: dict = None) -> str: ...
-    def append_message(self, session_id: str, message: dict) -> None: ...
-    def get_messages(self, session_id: str) -> list[dict]: ...
-    def search_sessions(self, query: str) -> list[Session]: ...
-    def link_child_session(self, parent_id: str, child_id: str) -> None: ...
-
-class SessionExporter:
-    """Exports completed sessions to readable Markdown files."""
-
-    def export(self, session_id: str, output_dir: str) -> str:
-        """Export a session to Markdown. Returns the output file path.
-
-        Output format:
-        - YAML frontmatter (session id, agent, task, timestamp, status, token usage)
-        - Chronological message log with role labels
-        - Tool calls rendered as fenced code blocks
-        - Subagent delegations shown as nested sections
-        """
-
-    def export_on_session_end(self, session_id: str) -> str:
-        """Auto-called when a session completes. Writes to workspace/sessions/."""
-```
-
-**Markdown export example:**
-
-```markdown
----
-session_id: "abc123"
-agent: main_agent
-task: "Investigate attention mechanisms for long-context documents"
-started: "2026-04-23T10:00:00"
-ended: "2026-04-23T10:45:00"
-status: completed
-total_tokens: 125000
 ---
 
-## User
-Investigate whether transformer attention mechanisms can be improved...
+## 13. 配置系统
 
-## Assistant (MainAgent)
-I'll break this into phases...
+### 加载顺序（deep merge）
 
-## Tool Call: delegate
+```
+代码默认值 → ~/.autosci/config.yaml → ./autosci.yaml → 命令行 overrides
+```
+
+### 主要配置项
+
+```yaml
+llm:
+  provider: openai          # anthropic | openai
+  model: gpt-4o
+  api_key_env: OPENAI_API_KEY
+  base_url: ~               # openai-compatible 端点，留空则用官方
+
+runtime:
+  context_window: 200000
+  compression_threshold: 0.75
+
+memory:
+  base_dir: ~/.autosci/memory/
+
+storage:
+  db_path: ~/.autosci/sessions.db
+  auto_export: true
+  export_dir: ./sessions/
+
+skills:
+  include_builtin: true
+  dirs: [~/.autosci/skills/, ./skills/]
+
+task:
+  workspace: ~              # task 模式工作目录
+  enable_trajectory: true
+  enable_understanding: true
+```
+
+---
+
+## 14. 入口点
+
+### `autosci`（`cli.py`）
+
+```bash
+# 助手模式
+autosci                              # 交互式 REPL（TUI）
+autosci "research task"              # 单次执行
+
+# 研究任务模式
+autosci task "reproduce paper X" -w ./workspace
+autosci task --from-file task.md -w ./workspace
+autosci task "..." -w ./workspace --workflow reproduce
+
+# 管理命令
+autosci --init                       # 初始化 ~/.autosci/
+autosci workflow list                # 列出可用 workflow
+autosci workflow show reproduce      # 查看 workflow phases
+autosci agent list                   # 列出已注册 agent
+autosci agent add researcher         # 安装内置模板到 ~/.autosci/agents/
+```
+
+**研究任务模式执行流程：**
+
+```
+_bootstrap()          ← 注册所有工具 + agent（含 YAML 内置模板）
+load_config()
+_init_task_workspace(workspace)   ← 创建 data/ code/ outputs/ report/ trajectory/ 等
+TaskUnderstanding.analyze(task)   ← 生成 TaskPlan，保存 task_plan.json
+        ↓
+  --workflow?
+  ├── 是 → WorkflowEngine.run(workflow_def, task, task_plan)
+  └── 否 → runner.run(MainAgent, task + task_plan)
+```
+
+### `autosci-bench`（`bench.py`）
+
+ResearchClawBench 评测适配器：
+
+```bash
+autosci-bench -m <PROMPT> -w <WORKSPACE>
+```
+
+- 与 `cli.py` 的 `_bootstrap()` 保持同步
+- 追加 benchmark 专用提示（workspace 布局要求、报告格式）
+- JSON Lines 输出到 stdout（`event: start / agent_info / usage / done`）
+- 兜底：若未生成 `report/report.md`，自动写入最终响应
+
 ```json
-{"agent": "research", "task": "Search for recent papers on..."}
+{"event": "start", "agent": "autosci", "task": "..."}
+{"event": "done", "status": "completed", "tokens": 12345}
 ```
-
-### Subagent: ResearchAgent
-> Found 12 relevant papers...
-
-## Assistant (MainAgent)
-Based on the literature review...
-```
-
-**Stored data (SQLite):**
-- Session metadata (id, timestamp, agent, task, status)
-- Messages (role, content, tool_calls, token_count)
-- Session lineage (parent-child for delegation)
-- Tool call records (for reproducibility)
-
-**Exported data (Markdown):**
-- One `.md` file per session in `{workspace}/sessions/`
-- Filename: `{timestamp}_{session_id_short}_{task_slug}.md`
-- Git-trackable, human-reviewable, can serve as research appendix
-
-### 3.8 Protocols (`src/autosci/protocols/`)
-
-Shared data structures for inter-module communication.
-
-```python
-@dataclass
-class RunContext:
-    session_id: str
-    agent: BaseAgent
-    workspace: str             # working directory for this run
-    parent_context: RunContext | None  # for delegated subagents
-    iteration_budget: int
-    config: dict
-
-@dataclass
-class RunResult:
-    session_id: str
-    response: str
-    status: str                # "completed" | "interrupted" | "error" | "budget_exhausted"
-    token_usage: TokenUsage
-    tool_calls_count: int
-
-@dataclass
-class LLMResponse:
-    content: str | None
-    tool_calls: list[ToolCall] | None
-    usage: TokenUsage
-    finish_reason: str
-
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict
-
-@dataclass
-class MemoryEntry:
-    key: str
-    content: str
-    memory_type: str           # episodic | semantic | procedural
-    timestamp: str
-    relevance_score: float | None
-```
-
-### 3.9 Configuration (`src/autosci/configs/`)
-
-```python
-# configs/default.py
-DEFAULT_CONFIG = {
-    "llm": {
-        "provider": "anthropic",       # anthropic | openai | local
-        "model": "claude-sonnet-4-20250514",
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "max_tokens": 8192,
-    },
-    "runtime": {
-        "max_iterations": 100,
-        "context_window": 200000,
-        "compression_threshold": 0.75,  # compress at 75% of context window
-    },
-    "storage": {
-        "db_path": "~/.autosci/sessions.db",
-        "export_dir": "./sessions/",       # Markdown export directory (relative to workspace)
-        "auto_export": True,               # auto-export to Markdown on session end
-    },
-    "memory": {
-        "provider": "file",            # file | (future: vector)
-        "base_dir": "~/.autosci/memory/",
-    },
-    "skills": {
-        "dirs": ["~/.autosci/skills/", "./skills/"],
-    },
-}
-```
-
-## 4. Directory Structure
-
-```text
-autosci-2/
-├── src/
-│   └── autosci/
-│       ├── __init__.py
-│       ├── agents/
-│       │   ├── __init__.py
-│       │   ├── base.py              # BaseAgent ABC
-│       │   ├── registry.py          # AgentRegistry (self-registration)
-│       │   ├── main_agent.py        # MainAgent (orchestrator)
-│       │   └── subagents/
-│       │       ├── __init__.py
-│       │       ├── research.py      # ResearchAgent
-│       │       ├── experiment.py    # ExperimentAgent
-│       │       ├── code.py          # CodeAgent
-│       │       ├── analysis.py      # AnalysisAgent
-│       │       └── write.py         # WriteAgent
-│       ├── runtime/
-│       │   ├── __init__.py
-│       │   ├── runner.py            # AgentRunner (while-loop)
-│       │   ├── prompt_builder.py    # PromptBuilder
-│       │   ├── error_handler.py     # ErrorHandler
-│       │   └── llm_client.py        # LLMClient
-│       ├── tools/
-│       │   ├── __init__.py
-│       │   ├── registry.py          # ToolRegistry
-│       │   ├── file_tools.py        # File operations
-│       │   ├── terminal_tool.py     # Shell execution
-│       │   ├── web_tools.py         # Web search/fetch
-│       │   └── agent_tools.py       # delegate, ask_user
-│       ├── context/
-│       │   ├── __init__.py
-│       │   ├── engine.py            # ContextEngine ABC
-│       │   └── compressor.py        # SummarizationCompressor
-│       ├── memory/
-│       │   ├── __init__.py
-│       │   ├── provider.py          # MemoryProvider ABC
-│       │   ├── manager.py           # MemoryManager
-│       │   └── file_provider.py     # File-based memory
-│       ├── skills/
-│       │   ├── __init__.py
-│       │   └── engine.py            # SkillEngine
-│       ├── storage/
-│       │   ├── __init__.py
-│       │   ├── session_store.py     # SessionStore (SQLite)
-│       │   └── exporter.py          # SessionExporter (Markdown)
-│       ├── protocols/
-│       │   ├── __init__.py
-│       │   └── schemas.py           # Shared data structures
-│       ├── configs/
-│       │   ├── __init__.py
-│       │   └── default.py           # Default configuration
-│       └── utils/
-│           ├── __init__.py
-│           └── tokens.py            # Token counting utilities
-├── tests/
-│   ├── test_runner.py
-│   ├── test_tools.py
-│   ├── test_context.py
-│   ├── test_memory.py
-│   ├── test_storage.py
-│   └── test_skills.py
-├── scripts/
-│   └── run.py                       # CLI entry point
-├── skills/                           # Built-in skill definitions
-│   └── ...
-├── docs/
-├── reference_designs/
-├── requirements.txt
-├── CLAUDE.md
-└── README.md
-```
-
-## 5. Execution Flow Example
-
-```
-User: "Investigate whether transformer attention mechanisms can be improved
-       for long-context scientific document understanding"
-
-MainAgent receives task
-  ├─ Plans research phases:
-  │   1. Literature review on attention mechanisms + long context
-  │   2. Identify promising improvement directions
-  │   3. Design experiment
-  │   4. Implement & run experiment
-  │   5. Analyze results
-  │   6. Write report
-  │
-  ├─ Delegates to ResearchAgent:
-  │   "Search for recent papers on efficient attention for long documents"
-  │   → ResearchAgent uses web_search, reads papers, produces summary
-  │   → Returns structured findings to MainAgent
-  │
-  ├─ MainAgent reviews findings, decides direction
-  │
-  ├─ Delegates to ExperimentAgent:
-  │   "Design experiment comparing sliding window vs. sparse attention..."
-  │   → ExperimentAgent produces experiment plan
-  │
-  ├─ Delegates to CodeAgent:
-  │   "Implement the experiment based on this plan..."
-  │   → CodeAgent writes code, runs tests
-  │
-  ├─ Delegates to AnalysisAgent:
-  │   "Analyze the experimental results..."
-  │   → AnalysisAgent produces statistical analysis
-  │
-  ├─ Delegates to WriteAgent:
-  │   "Write a research report summarizing findings..."
-  │   → WriteAgent produces structured report
-  │
-  └─ MainAgent synthesizes final output
-```
-
-## 6. Key Design Decisions
-
-### 6.1 Why while-loop over graph/DAG?
-
-- Simpler to understand and debug
-- Research workflow is inherently exploratory — hard to pre-define as a graph
-- Main agent can dynamically re-plan based on intermediate results
-- Subagents themselves also use while-loop, keeping the model uniform
-
-### 6.2 Why self-registration for tools?
-
-- No central manifest file to keep in sync
-- Adding a new tool = adding a file with handler + schema + `registry.register()`
-- Easy to conditionally enable/disable tools via `check_fn`
-
-### 6.3 Why hybrid storage (SQLite + Markdown export)?
-
-- **SQLite** gives the agent fast runtime queries, FTS, structured search, and atomic writes
-- **Markdown** gives researchers human-readable, git-friendly session records
-- Research process itself is a valuable artifact — researchers may review agent reasoning, annotate sessions, or include them in publications
-- One-way export (SQLite → Markdown) keeps the system simple — no sync conflicts
-- Alternative: pure Markdown storage would require parsing files for search/query, which is slow at scale and loses atomicity
-
-### 6.4 Why separate ContextEngine interface?
-
-- Compression strategy is likely to evolve (summarization → retrieval-augmented → hybrid)
-- Keeping it pluggable means we can swap strategies without touching the runner
-- Different agents might need different compression strategies
-
-### 6.5 Why not hardcode the research workflow?
-
-- Different research tasks have fundamentally different structures
-- The main agent should be able to skip phases, reorder them, or add new ones
-- Human-on-the-loop: user can intervene and redirect at any point
-
-## 7. Dependencies (Initial)
-
-```
-anthropic          # Anthropic API client
-openai             # OpenAI-compatible API client (for flexibility)
-tiktoken           # Token counting
-pydantic           # Data validation for schemas
-rich               # CLI output formatting
-```
-
-## 8. Implementation Priority
-
-| Phase | Scope | Modules |
-|-------|-------|---------|
-| P0 | Minimal viable loop | protocols, configs, llm_client, runner, base agent, main_agent (simple version) |
-| P1 | Core tools | registry, file_tools, terminal_tool, web_tools |
-| P2 | Storage + context | session_store, context engine + compressor |
-| P3 | Delegation | agent_tools (delegate), subagent implementations |
-| P4 | Memory | provider, manager, file_provider |
-| P5 | Skills | engine, built-in skills |

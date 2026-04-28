@@ -156,3 +156,36 @@ All planned modules implemented:
 4. **Interactive REPL with TUI**: multi-turn conversation with rich Panel output,
    prompt_toolkit input with history, spinner during LLM calls. Commands: /help /status
    /history /clear /quit. Session saved on exit. Tested: multi-turn context retention works.
+
+## 2026-04-28
+
+### Phase F: TaskUnderstanding Subagent (COMPLETED)
+
+Redesigned task understanding from a single LLM call into a full subagent with tool access.
+
+**New data model** (`task/schemas.py`):
+- `TaskContext`: 4-dimension parse — research_subject, data_type, task_goal, known_methods, key_terms
+- `RelatedWork`: per-paper extraction — contribution, evidence, boundary/gap, year, authors
+- `ResearchQuestion`: derived from context key points + literature gaps; traceable to related works
+- `Claim`: typed hypothesis (comparative/existence/improvement/causal); verifiable_by specific experiment
+- `TaskPlan`: complete artifact; `to_prompt_block()` for system prompt injection, `to_markdown()` for report
+
+**TaskUnderstandingAgent** (`task/agent.py`):
+- Inherits `BaseAgent`; max_iterations=40; tools: web_search, web_fetch, read/write_file, glob, grep
+- Two modes with detailed step-by-step prompts:
+  - `topic_only`: 5 steps — literature exploration → brainstorm → select → formalize → write files
+  - `task_given`: 5 steps — context parse → key point extraction → literature search → synthesis → write files
+- Both prompts specify exact JSON format for `task_plan.json`
+- Registered in agent_registry; bootstrapped in `cli._bootstrap()`
+
+**TaskUnderstanding orchestrator** (`task/understanding.py`):
+- Takes `runner` + `workspace` (NOT llm_client — runs as a full subagent)
+- `detect_mode()`: word-boundary regex; ≤200 chars + no method keywords → topic_only
+- `analyze()`: runs TaskUnderstandingAgent via runner.run(), reads back written task_plan.json
+- Fallback to minimal plan if agent fails to write the file
+
+**CLI integration** (`cli.py`):
+- `_bootstrap()` now imports `autosci.task.agent` to register TaskUnderstandingAgent
+- `_run_task()`: runner created before TaskUnderstanding (shared); recorder created before runner
+- Removed `LLMClient` import from `_run_task()` (no longer needed for understanding)
+- Task plan Panel updated to show RQs + Claims counts (no longer references old `subtasks` field)

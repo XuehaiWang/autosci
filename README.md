@@ -9,7 +9,7 @@ AutoSci is an AI research agent that can plan research workflows, search literat
 ### 1. Install
 
 ```bash
-git clone https://github.com/yourname/autosci.git
+git clone https://github.com/your-org/autosci.git
 cd autosci
 pip install -e .
 ```
@@ -88,22 +88,23 @@ AutoSci has 5 specialized subagents that the main agent can delegate to:
 
 | Agent | Role |
 |-------|------|
-| `research` | Literature search, paper reading, knowledge synthesis |
-| `experiment` | Experiment design, parameter selection |
-| `code` | Implementation, debugging, testing |
-| `analysis` | Data analysis, statistical testing |
-| `write` | Paper/report writing and formatting |
+| `researcher` | Literature search, paper reading, knowledge synthesis |
+| `experiment` | Experiment design, parameter selection, methodology |
+| `coder` | Code implementation, debugging, testing |
+| `analyst` | Data analysis, statistical testing, visualization |
+| `writer` | Scientific writing, report formatting |
 
 The main agent decides which subagents to use based on the task — the workflow is not hardcoded.
+You can add custom agents by placing a YAML file in `~/.autosci/agents/`.
 
-### 15 Built-in Tools
+### 17 Built-in Tools
 
 | Category | Tools |
 |----------|-------|
 | File | `read_file`, `write_file`, `list_dir`, `glob`, `grep` |
 | Terminal | `execute_command` |
 | Web | `web_search`, `web_fetch` |
-| Agent | `delegate`, `ask_user` |
+| Agent | `delegate`, `create_agent`, `ask_user`, `update_claim` |
 | Memory | `store_memory`, `recall_memory` |
 | Skills | `list_skills`, `view_skill`, `create_skill` |
 
@@ -142,7 +143,7 @@ Entry (CLI/REPL)
     │
     ├── Agents: MainAgent + 5 subagents (self-registering)
     │
-    └── Capabilities: Tools (15), Context compression, Memory, Skills, Storage
+    └── Capabilities: Tools (17), Context compression, Memory, Skills, Storage, Trajectory
 ```
 
 For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).

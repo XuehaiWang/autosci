@@ -17,9 +17,10 @@ class MemoryManager:
     reflection.
     """
 
-    def __init__(self, provider: MemoryProvider, llm_client=None):
+    def __init__(self, provider: MemoryProvider, llm_client=None, trajectory=None):
         self.provider = provider
         self.llm_client = llm_client
+        self.trajectory = trajectory
         self._session_stack: list[tuple[str, str]] = []  # stack of (session_id, task)
 
     @property
@@ -37,14 +38,16 @@ class MemoryManager:
         self._session_stack.append((session_id, task))
         self.provider.on_session_start(session_id, task)
 
-    def on_session_end(self, session_id: str, messages: list[dict], status: str) -> None:
-        """Called when an agent run completes. Triggers reflection if successful."""
+    def on_session_end(self, session_id: str, messages: list[dict], status: str) -> list[str]:
+        """Called when an agent run completes. Triggers reflection if successful.
+        Returns summaries of memories stored (for trajectory)."""
+        stored_summaries = []
         if status == "completed" and self.llm_client:
-            self._reflect_on_session(session_id, messages)
+            stored_summaries = self._reflect_on_session(session_id, messages)
         self.provider.on_session_end(session_id, messages)
-        # Pop session from stack (restore parent's context)
         if self._session_stack and self._session_stack[-1][0] == session_id:
             self._session_stack.pop()
+        return stored_summaries
 
     def on_pre_compress(self, messages_to_compress: list[dict]) -> None:
         """Called before context compression. Rescues key info from tool results."""
@@ -77,14 +80,20 @@ class MemoryManager:
         """Get memory block for system prompt injection."""
         return self.provider.get_system_prompt_block(task=self._current_task)
 
+    def get_recent_entries(self, limit: int = 10) -> list:
+        """Return recently retrieved memory entries (for trajectory logging)."""
+        if not self._current_task:
+            return []
+        return self.provider.retrieve(self._current_task, limit=limit)
+
     # === Post-session reflection ===
 
-    def _reflect_on_session(self, session_id: str, messages: list[dict]) -> None:
-        """Use LLM to extract memories from the session history."""
-        # Build a condensed version of the session
+    def _reflect_on_session(self, session_id: str, messages: list[dict]) -> list[str]:
+        """Use LLM to extract memories from the session history.
+        Returns summaries of stored memories (for trajectory)."""
         session_text = self._condense_messages(messages)
         if not session_text or len(session_text) < 100:
-            return
+            return []
 
         prompt = (
             "Review this research session and extract memories worth keeping for future sessions.\n\n"
@@ -96,6 +105,7 @@ class MemoryManager:
             '- "content": detailed description (1-3 sentences)\n\n'
             "Rules:\n"
             "- Only extract genuinely useful insights, not trivial observations\n"
+            "- Skip warnings, deprecation notices, and routine tool outputs\n"
             "- If nothing is worth saving, output []\n"
             "- Limit to at most 5 memories per session\n\n"
             f"Session:\n{session_text}"
@@ -108,9 +118,10 @@ class MemoryManager:
             )
 
             if not response.content:
-                return
+                return []
 
             memories = self._parse_memories_json(response.content)
+            stored_summaries = []
             for mem in memories:
                 self.provider.store(
                     content=mem.get("content", ""),
@@ -119,17 +130,29 @@ class MemoryManager:
                     summary=mem.get("summary", ""),
                     source_session=session_id,
                 )
+                stored_summaries.append(
+                    f"[{mem.get('type','?')}] {mem.get('summary','')}"
+                )
 
             if memories:
                 logger.info(f"Reflection: extracted {len(memories)} memories from session {session_id}")
 
+            return stored_summaries
+
         except Exception as e:
             logger.warning(f"Session reflection failed: {e}")
+            return []
 
     # === Pre-compression rescue ===
 
     def _rescue_from_messages(self, messages: list[dict]) -> None:
-        """Extract key info from tool results before they get compressed."""
+        """Extract genuine errors from tool results before they get compressed.
+
+        Only saves real errors (Exception/Error), not warnings or routine output.
+        Deduplicates by error prefix within the session.
+        """
+        seen_prefixes: set[str] = set()
+
         for msg in messages:
             content = msg.get("content")
             if not isinstance(content, list):
@@ -140,19 +163,31 @@ class MemoryManager:
                     continue
 
                 result_text = block.get("content", "")
-                if not isinstance(result_text, str) or len(result_text) < 50:
+                if not isinstance(result_text, str) or len(result_text) < 200:
                     continue
 
-                # Check for error patterns worth remembering
-                if any(kw in result_text.lower() for kw in ["error", "traceback", "failed", "exception"]):
-                    error_summary = result_text[:200].replace("\n", " ")
-                    self.provider.store(
-                        content=f"Tool error encountered:\n{result_text[:500]}",
-                        memory_type="episodic",
-                        tags=["error", "tool-result"],
-                        summary=f"Error: {error_summary[:100]}",
-                        source_session=self._current_session_id,
-                    )
+                text_lower = result_text.lower()
+
+                # Only save genuine errors, skip warnings/deprecations
+                is_error = any(kw in text_lower for kw in ["error:", "exception:", "traceback"])
+                is_warning = any(kw in text_lower for kw in ["warning:", "deprecat", "userwarning"])
+                if not is_error or is_warning:
+                    continue
+
+                # Deduplicate by first 80 chars of error
+                prefix = result_text[:80].strip()
+                if prefix in seen_prefixes:
+                    continue
+                seen_prefixes.add(prefix)
+
+                error_summary = result_text[:200].replace("\n", " ")
+                self.provider.store(
+                    content=f"Tool error encountered:\n{result_text[:500]}",
+                    memory_type="episodic",
+                    tags=["error", "tool-result"],
+                    summary=f"Error: {error_summary[:100]}",
+                    source_session=self._current_session_id,
+                )
 
     # === Helpers ===
 

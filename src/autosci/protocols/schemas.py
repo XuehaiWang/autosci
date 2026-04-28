@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from autosci.agents.base import BaseAgent
+    from autosci.trajectory.recorder import TrajectoryRecorder
 
 
 @dataclass
@@ -37,6 +38,8 @@ class RunContext:
     parent_context: Optional["RunContext"] = None
     iteration_budget: int = 100
     config: dict = field(default_factory=dict)
+    span_id: Optional[str] = None                          # trajectory span id
+    trajectory: Optional["TrajectoryRecorder"] = None      # injected by runner
 
 
 @dataclass
@@ -47,13 +50,3 @@ class RunResult:
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     tool_calls_count: int = 0
 
-
-@dataclass
-class MemoryEntry:
-    id: str
-    content: str
-    memory_type: str  # episodic | semantic | procedural
-    tags: list[str] = field(default_factory=list)
-    source_session: Optional[str] = None
-    timestamp: str = ""
-    relevance_score: Optional[float] = None

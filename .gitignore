@@ -7,3 +7,6 @@ dist/
 build/
 .pytest_cache/
 sessions/
+*.db
+autosci.yaml
+skills/

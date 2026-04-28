@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import uuid
 
 from autosci.protocols.schemas import LLMResponse, ToolCall, TokenUsage
 

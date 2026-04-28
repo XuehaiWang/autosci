@@ -3,6 +3,7 @@ openai>=1.0.0
 pyyaml>=6.0
 rich>=13.0.0
 prompt_toolkit>=3.0.0
-duckduckgo-search>=4.0
 beautifulsoup4>=4.12.0
 requests>=2.28.0
+# Optional: install one of the following for web_search support:
+# duckduckgo-search>=4.0  (pip install "autosci[search]")

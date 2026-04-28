@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
     "llm": {
-        "provider": "openai",
-        "model": "gpt-5.4",
-        "api_key_env": "TUZI_API_KEY",
-        "base_url": "https://coding.tu-zi.com/v1",
+        "provider": "anthropic",        # anthropic | openai
+        "model": "claude-opus-4-5",     # change to your preferred model
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "base_url": None,               # None = provider default; set for openai-compatible endpoints
         "max_tokens": 8192,
     },
     "runtime": {
@@ -28,10 +28,16 @@ DEFAULT_CONFIG = {
     "memory": {
         "provider": "file",
         "base_dir": "~/.autosci/memory/",
+        "share_with_global": False,   # task mode: use workspace memory by default
     },
     "skills": {
         "dirs": ["~/.autosci/skills/", "./skills/"],
         "include_builtin": True,
+    },
+    "task": {
+        "workspace": None,            # set by `autosci task --workspace`
+        "enable_trajectory": False,   # enabled automatically in task mode
+        "enable_understanding": False, # enabled automatically in task mode
     },
 }
 

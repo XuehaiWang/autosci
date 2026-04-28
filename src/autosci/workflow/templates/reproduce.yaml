@@ -1,0 +1,56 @@
+name: reproduce
+description: "Reproduce a paper's experiment end-to-end: literature → implementation → experiment → analysis → report"
+phases:
+  - id: literature
+    agent: research
+    goal: |
+      Search for and carefully read the target paper. Summarize:
+      - The core method and key contributions
+      - The experimental setup (datasets, baselines, metrics, hyperparameters)
+      - The reported results (main tables/figures)
+      - Any implementation details mentioned in the paper or appendix
+      Save a structured summary to literature_summary.md.
+    depends_on: []
+
+  - id: implementation
+    agent: code
+    goal: |
+      Based on the literature summary, implement the method described in the paper.
+      - Write clean, runnable code in the appropriate language (Python preferred)
+      - Implement data loading, model/algorithm, training/evaluation loop
+      - Save code to the code/ directory with a clear README or inline comments
+      - Verify the code runs without errors on a small test case
+    depends_on: [literature]
+
+  - id: experiment
+    agent: experiment
+    goal: |
+      Run the experiment using the implemented code.
+      - Execute on the specified dataset(s) with the paper's hyperparameters
+      - Save all raw outputs, logs, and checkpoints to outputs/
+      - If full-scale experiments are too costly, run a reduced version and note the difference
+      - Record exact commands used so results are reproducible
+    depends_on: [implementation]
+
+  - id: analysis
+    agent: analysis
+    goal: |
+      Analyze the experimental results and compare to the paper's reported numbers.
+      - Load outputs from the experiment phase
+      - Compute the same metrics as the paper (accuracy, F1, RMSE, etc.)
+      - Create comparison tables and plots, save to outputs/
+      - Quantify any gap between reproduced and reported results
+      - Identify possible causes if results differ significantly
+    depends_on: [experiment]
+
+  - id: report
+    agent: write
+    goal: |
+      Write a complete reproduction report in Markdown.
+      Structure: Abstract, Method Summary, Implementation Details,
+      Experimental Setup, Results & Comparison, Discussion, Conclusion.
+      - Be precise about what matched and what did not
+      - Include the comparison table from the analysis phase
+      - Note any deviations from the original paper and their likely impact
+      Save the report to report/reproduction_report.md.
+    depends_on: [analysis]

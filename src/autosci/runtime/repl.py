@@ -59,7 +59,7 @@ class REPL:
         memory_block = self.runner.memory_manager.get_system_prompt_block()
 
         # Match skills
-        skills_block = self.runner.skill_engine.get_prompt_block("research")
+        skills_block = self.runner.skill_engine.get_prompt_block("general research")
 
         # Initialize context engine
         context_window = self.runner.config.get("runtime", {}).get("context_window", 200000)

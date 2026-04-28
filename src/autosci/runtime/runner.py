@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+from typing import Optional
 
 from autosci.context.compressor import SummarizationCompressor
 from autosci.context.engine import ContextEngine
@@ -18,6 +19,8 @@ from autosci.storage.session_store import SessionStore
 from autosci.storage.exporter import SessionExporter
 from autosci.tools.registry import registry as tool_registry
 from autosci.agents.registry import agent_registry
+from autosci.trajectory.recorder import TrajectoryRecorder
+from autosci.trajectory.exporter import TrajectoryExporter
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +31,21 @@ class AgentRunner:
     The runner is agent-agnostic — it can run any BaseAgent subclass
     (main agent or subagent) using the same while-loop.
 
-    Integrates session storage, context compression, and memory system.
+    Integrates session storage, context compression, memory system,
+    and optional trajectory recording.
     """
 
     # Tools intercepted by the runner instead of dispatched to the registry
-    _RUNNER_TOOLS = {"delegate", "ask_user"}
+    _RUNNER_TOOLS = {"delegate", "ask_user", "create_agent", "update_claim"}
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, trajectory_recorder: Optional[TrajectoryRecorder] = None):
         self.config = config
         self.llm_client = LLMClient(config["llm"])
         self.prompt_builder = PromptBuilder()
         self.error_handler = ErrorHandler()
+
+        # Trajectory (optional — None in assistant mode)
+        self.trajectory = trajectory_recorder
 
         # Session storage
         storage_config = config.get("storage", {})
@@ -65,6 +72,7 @@ class AgentRunner:
         self.memory_manager = MemoryManager(
             provider=memory_provider,
             llm_client=self.llm_client,
+            trajectory=self.trajectory,
         )
 
         # Inject memory manager into memory tools
@@ -89,18 +97,38 @@ class AgentRunner:
         session_id: str = None,
         parent_context: RunContext = None,
     ) -> RunResult:
-        """Run an agent on a task until completion or budget exhaustion.
-
-        Args:
-            agent: BaseAgent instance to run
-            task: the user's task/query string
-            session_id: optional session ID (generated if not provided)
-            parent_context: optional parent context for delegated runs
-
-        Returns:
-            RunResult with response, status, and usage statistics.
-        """
+        """Run an agent on a task until completion or budget exhaustion."""
         session_id = session_id or uuid.uuid4().hex[:12]
+
+        # Initialize memory
+        self.memory_manager.on_session_start(session_id, task)
+        memory_entries = self.memory_manager.get_recent_entries()
+        memory_block = self.memory_manager.get_system_prompt_block()
+
+        # Match relevant skills
+        skills_block = self.skill_engine.get_prompt_block(task)
+
+        # Build system prompt
+        available_agents = agent_registry.list_available()
+        system_prompt = self.prompt_builder.build_system_prompt(
+            agent,
+            available_agents=available_agents if available_agents else None,
+            memory_block=memory_block if memory_block else None,
+            skills_block=skills_block if skills_block else None,
+        )
+
+        # Start trajectory span
+        span_id = None
+        if self.trajectory:
+            parent_span_id = parent_context.span_id if parent_context else None
+            memory_summaries = [e.summary for e in memory_entries] if memory_entries else []
+            span_id = self.trajectory.start_span(
+                agent_name=agent.name,
+                task=task,
+                system_prompt=system_prompt,
+                memories_loaded=memory_summaries,
+                parent_span_id=parent_span_id,
+            )
 
         context = RunContext(
             session_id=session_id,
@@ -109,6 +137,8 @@ class AgentRunner:
             parent_context=parent_context,
             iteration_budget=agent.max_iterations,
             config=self.config,
+            span_id=span_id,
+            trajectory=self.trajectory,
         )
 
         # Create session in storage
@@ -124,35 +154,17 @@ class AgentRunner:
         context_window = self.config.get("runtime", {}).get("context_window", 200000)
         self.context_engine.on_session_start(context_window)
 
-        # Initialize memory
-        self.memory_manager.on_session_start(session_id, task)
-        memory_block = self.memory_manager.get_system_prompt_block()
-
-        # Match relevant skills
-        skills_block = self.skill_engine.get_prompt_block(task)
-
-        # Build system prompt
-        available_agents = agent_registry.list_available()
-        system_prompt = self.prompt_builder.build_system_prompt(
-            agent,
-            available_agents=available_agents if available_agents else None,
-            memory_block=memory_block if memory_block else None,
-            skills_block=skills_block if skills_block else None,
-        )
-
         # Get tool definitions
         tool_defs = self._get_tool_definitions(agent)
 
         # Initialize messages
         messages = [{"role": "user", "content": task}]
-
-        # Persist the user's initial message
         self.session_store.append_message(session_id, "user", task)
 
         total_usage = TokenUsage()
         tool_calls_count = 0
 
-        logger.info(f"Starting agent '{agent.name}' (session={session_id})")
+        logger.info(f"Starting agent '{agent.name}' (session={session_id}, span={span_id})")
 
         for iteration in range(1, context.iteration_budget + 1):
             self.error_handler.reset()
@@ -167,7 +179,7 @@ class AgentRunner:
                     token_usage=total_usage,
                     tool_calls_count=tool_calls_count,
                 )
-                self._finalize_session(result, messages)
+                self._finalize_session(result, messages, span_id)
                 return result
 
             # Update token usage
@@ -183,7 +195,6 @@ class AgentRunner:
                     f"Agent '{agent.name}' completed in {iteration} iterations "
                     f"({total_usage.total_tokens} tokens, {tool_calls_count} tool calls)"
                 )
-                # Persist final assistant message
                 self.session_store.append_message(
                     session_id, "assistant", response.content or "",
                     token_count=response.usage.completion_tokens if response.usage else 0,
@@ -195,7 +206,7 @@ class AgentRunner:
                     token_usage=total_usage,
                     tool_calls_count=tool_calls_count,
                 )
-                self._finalize_session(result, messages)
+                self._finalize_session(result, messages, span_id)
                 return result
 
             # Build assistant message with tool_use blocks
@@ -210,8 +221,6 @@ class AgentRunner:
                     "input": tc.arguments,
                 })
             messages.append({"role": "assistant", "content": assistant_content})
-
-            # Persist assistant message
             self.session_store.append_message(
                 session_id, "assistant", assistant_content,
                 tool_calls=[{"id": tc.id, "name": tc.name, "arguments": tc.arguments}
@@ -225,12 +234,20 @@ class AgentRunner:
                 tool_calls_count += 1
                 logger.info(f"  [{iteration}] Tool: {tc.name}")
 
+                # Record tool start in trajectory
+                if self.trajectory and span_id:
+                    self.trajectory.record_tool_start(span_id, tc.id, tc.name, tc.arguments)
+
                 if tc.name in self._RUNNER_TOOLS:
-                    result_str = self._handle_agent_tool(
-                        tc.name, tc.arguments, context,
-                    )
+                    result_str = self._handle_agent_tool(tc.name, tc.arguments, context)
                 else:
                     result_str = tool_registry.dispatch(tc.name, tc.arguments)
+
+                # Record tool end in trajectory
+                if self.trajectory and span_id:
+                    self.trajectory.record_tool_end(
+                        span_id, tc.id, tc.name, tc.arguments, result_str,
+                    )
 
                 tool_results.append({
                     "type": "tool_result",
@@ -239,17 +256,19 @@ class AgentRunner:
                 })
 
             messages.append({"role": "user", "content": tool_results})
-
-            # Persist tool results
             self.session_store.append_message(session_id, "user", tool_results)
 
             # Check if context compression is needed
             current_tokens = total_usage.prompt_tokens
             if self.context_engine.should_compress(current_tokens):
                 logger.info("Context compression triggered")
-                # Let memory rescue info before compression
+                before_tokens = current_tokens
                 self.memory_manager.on_pre_compress(messages)
                 messages = self.context_engine.compress(messages)
+                # Estimate token count after compression (chars / 4 is a reasonable proxy)
+                after_tokens = sum(len(str(m)) for m in messages) // 4
+                if self.trajectory and span_id:
+                    self.trajectory.record_compression(span_id, before_tokens, after_tokens)
 
         # Budget exhausted
         logger.warning(f"Agent '{agent.name}' exhausted iteration budget ({context.iteration_budget})")
@@ -260,11 +279,16 @@ class AgentRunner:
             token_usage=total_usage,
             tool_calls_count=tool_calls_count,
         )
-        self._finalize_session(result, messages)
+        self._finalize_session(result, messages, span_id)
         return result
 
-    def _finalize_session(self, result: RunResult, messages: list[dict] = None) -> None:
-        """End the session in storage, trigger memory reflection, and export."""
+    def _finalize_session(
+        self,
+        result: RunResult,
+        messages: list[dict] = None,
+        span_id: str = None,
+    ) -> None:
+        """End the session in storage, trigger memory reflection, export, and close trajectory span."""
         self.session_store.end_session(
             session_id=result.session_id,
             status=result.status,
@@ -273,9 +297,22 @@ class AgentRunner:
         )
 
         # Memory reflection (only for completed sessions)
+        stored_summaries = []
         if messages:
-            self.memory_manager.on_session_end(
+            stored_summaries = self.memory_manager.on_session_end(
                 result.session_id, messages, result.status,
+            )
+
+        # Close trajectory span
+        if self.trajectory and span_id:
+            self.trajectory.end_span(
+                span_id=span_id,
+                status=result.status,
+                output=result.response,
+                prompt_tokens=result.token_usage.prompt_tokens,
+                completion_tokens=result.token_usage.completion_tokens,
+                total_tokens=result.token_usage.total_tokens,
+                memories_stored=stored_summaries,
             )
 
         if self.auto_export:
@@ -283,6 +320,13 @@ class AgentRunner:
                 result.session_id,
                 workspace=os.getcwd(),
             )
+
+    def export_trajectory(self, task: str = "", task_plan: dict = None) -> str:
+        """Generate trajectory report.md. Returns path or empty string."""
+        if not self.trajectory:
+            return ""
+        exporter = TrajectoryExporter(self.trajectory.trajectory_dir)
+        return exporter.export(task=task, task_plan=task_plan)
 
     def _call_with_retry(self, messages, system_prompt, tool_defs):
         """Call LLM with retry on transient errors."""
@@ -310,7 +354,6 @@ class AgentRunner:
     def _get_tool_definitions(self, agent) -> list[dict]:
         """Get tool definitions filtered by agent's allowed tools."""
         if agent.tools:
-            # Always include agent tools (delegate, ask_user) for the main agent
             names = list(agent.tools)
             for tool_name in self._RUNNER_TOOLS:
                 if tool_name not in names:
@@ -320,19 +363,19 @@ class AgentRunner:
             return tool_registry.get_definitions()
 
     def _handle_agent_tool(self, name: str, args: dict, context: RunContext) -> str:
-        """Handle runner-intercepted tools (delegate, ask_user)."""
+        """Handle runner-intercepted tools (delegate, ask_user, create_agent, update_claim)."""
         if name == "delegate":
             return self._handle_delegate(args, context)
         elif name == "ask_user":
             return self._handle_ask_user(args)
+        elif name == "create_agent":
+            return self._handle_create_agent(args, context)
+        elif name == "update_claim":
+            return self._handle_update_claim(args, context)
         return f"Error: unknown agent tool: {name}"
 
     def _handle_delegate(self, args: dict, parent_context: RunContext) -> str:
-        """Spawn a child agent run for delegation.
-
-        Creates a new session linked to the parent, runs the subagent with
-        its own iteration budget, and returns the result.
-        """
+        """Spawn a child agent run for delegation."""
         agent_name = args.get("agent", "")
         task = args.get("task", "")
         extra_context = args.get("context", "")
@@ -340,29 +383,27 @@ class AgentRunner:
         if not agent_name or not task:
             return "Error: delegate requires 'agent' and 'task' arguments"
 
-        # Look up the subagent
         try:
-            agent_class = agent_registry.get(agent_name)
+            agent = agent_registry.get(agent_name)
         except KeyError as e:
             return str(e)
 
-        agent = agent_class()
-
-        # Build the full task with context
         full_task = task
         if extra_context:
             full_task = f"{task}\n\n## Context\n\n{extra_context}"
 
         logger.info(f"Delegating to '{agent_name}': {task[:80]}")
 
-        # Run the subagent with a child context
+        # Record delegation event in trajectory
+        if self.trajectory and parent_context.span_id:
+            self.trajectory.record_delegation(parent_context.span_id, agent_name, task)
+
         child_result = self.run(
             agent=agent,
             task=full_task,
             parent_context=parent_context,
         )
 
-        # Format the result for the parent agent
         status_note = ""
         if child_result.status != "completed":
             status_note = f"\n[Note: subagent ended with status '{child_result.status}']"
@@ -370,6 +411,132 @@ class AgentRunner:
         return (
             f"[Subagent '{agent_name}' result]{status_note}\n\n"
             f"{child_result.response}"
+        )
+
+    def _handle_create_agent(self, args: dict, parent_context: RunContext) -> str:
+        """Instantiate a DynamicAgent from inline definition and run it."""
+        from autosci.agents.dynamic_agent import DynamicAgent
+
+        name = args.get("name", "").strip().lower().replace(" ", "_")
+        if not name:
+            return "Error: create_agent requires 'name'"
+        task = args.get("task", "").strip()
+        if not task:
+            return "Error: create_agent requires 'task'"
+
+        agent = DynamicAgent(
+            name=name,
+            role=args.get("description", ""),
+            system_prompt=args.get("system_prompt", f"You are the {name} agent."),
+            tools=args.get("tools", []),
+            max_iterations=int(args.get("max_iterations", 30)),
+        )
+
+        # Optionally persist the agent YAML to the workspace/agents/ directory
+        workspace = self.config.get("task", {}).get("workspace", "")
+        if workspace:
+            self._save_agent_yaml(agent, workspace)
+
+        # Register temporarily so it can be listed/reused in this session
+        agent_registry.register_instance(agent)
+
+        logger.info(f"create_agent: spawning '{name}' for task: {task[:80]}")
+
+        if self.trajectory and parent_context.span_id:
+            self.trajectory.record_delegation(parent_context.span_id, name, task)
+
+        child_result = self.run(
+            agent=agent,
+            task=task,
+            parent_context=parent_context,
+        )
+
+        status_note = ""
+        if child_result.status != "completed":
+            status_note = f"\n[Note: agent ended with status '{child_result.status}']"
+
+        return f"[Agent '{name}' result]{status_note}\n\n{child_result.response}"
+
+    def _save_agent_yaml(self, agent, workspace: str) -> None:
+        """Save a DynamicAgent definition as YAML to workspace/agents/."""
+        import yaml  # optional — skip gracefully if unavailable
+        agents_dir = os.path.join(workspace, "agents")
+        os.makedirs(agents_dir, exist_ok=True)
+        path = os.path.join(agents_dir, f"{agent.name}.yaml")
+        data = {
+            "name": agent.name,
+            "description": agent.role,
+            "system_prompt": agent._system_prompt,
+            "tools": agent.tools,
+            "max_iterations": agent.max_iterations,
+        }
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+            logger.debug(f"Saved agent YAML: {path}")
+        except Exception as e:
+            logger.warning(f"Could not save agent YAML: {e}")
+
+    def _handle_update_claim(self, args: dict, context: RunContext) -> str:
+        """Update a Claim's status in workspace/task_plan.json and record in trajectory."""
+        import datetime
+        from autosci.task.schemas import load_task_plan, save_task_plan
+        from autosci.trajectory.schemas import TrajectoryEvent
+
+        claim_id = args.get("claim_id", "").strip()
+        new_status = args.get("status", "").strip()
+        evidence = args.get("evidence", "").strip()
+
+        if not claim_id or not new_status:
+            return "Error: update_claim requires 'claim_id' and 'status'"
+
+        valid_statuses = {"supported", "refuted", "partial", "unverified"}
+        if new_status not in valid_statuses:
+            return f"Error: status must be one of {sorted(valid_statuses)}"
+
+        workspace = context.workspace or self.config.get("task", {}).get("workspace", "")
+        if not workspace:
+            return "Error: update_claim requires a task workspace (not available in assistant mode)"
+
+        plan = load_task_plan(workspace)
+        if plan is None:
+            return f"Error: task_plan.json not found in workspace '{workspace}'"
+
+        # Find and update the claim
+        matched = False
+        for claim in plan.claims:
+            if claim.id.upper() == claim_id.upper():
+                old_status = claim.status
+                claim.status = new_status
+                matched = True
+                break
+
+        if not matched:
+            available = [c.id for c in plan.claims]
+            return f"Error: claim '{claim_id}' not found. Available: {available}"
+
+        # Persist updated plan
+        save_task_plan(plan, workspace)
+
+        # Record in trajectory
+        if self.trajectory and context.span_id:
+            self.trajectory.record_event(TrajectoryEvent(
+                event_type="claim_update",
+                timestamp=datetime.datetime.now().isoformat(timespec="seconds"),
+                span_id=context.span_id,
+                agent_name=context.agent.name,
+                data={
+                    "claim_id": claim_id,
+                    "old_status": old_status,
+                    "new_status": new_status,
+                    "evidence": evidence,
+                },
+            ))
+
+        logger.info(f"Claim {claim_id}: {old_status} → {new_status}")
+        return (
+            f"Claim {claim_id} updated: {old_status} → {new_status}\n"
+            f"Evidence recorded: {evidence}"
         )
 
     def _handle_ask_user(self, args: dict) -> str:

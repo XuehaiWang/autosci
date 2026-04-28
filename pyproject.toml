@@ -25,9 +25,14 @@ search = ["duckduckgo-search>=4.0"]
 
 [project.scripts]
 autosci = "autosci.cli:main"
+autosci-bench = "autosci.bench:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-autosci = ["builtin_skills/*.md"]
+autosci = [
+    "builtin_skills/*.md",
+    "agents/templates/*.yaml",
+    "workflow/templates/*.yaml",
+]

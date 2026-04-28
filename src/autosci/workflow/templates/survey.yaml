@@ -1,0 +1,47 @@
+name: survey
+description: "Conduct a systematic literature survey and produce a structured review report"
+phases:
+  - id: scope
+    agent: research
+    goal: |
+      Define the survey scope and conduct an initial search.
+      - Identify the key topic, subtopics, and time range
+      - Search for 20-40 highly relevant papers
+      - Categorize them by subtopic / approach
+      - Save a bibliography list to literature/bibliography.md with titles, authors, venues, years
+    depends_on: []
+
+  - id: deep_read
+    agent: research
+    goal: |
+      Perform deep reading of the most important papers identified in the scope phase.
+      For each key paper (top 10-15):
+      - Summarize the problem, method, experiments, and results
+      - Note what it improves over prior work
+      - Identify limitations and open questions
+      Save individual summaries to literature/summaries/.
+    depends_on: [scope]
+
+  - id: synthesis
+    agent: analysis
+    goal: |
+      Synthesize findings across all papers into structured insights.
+      - Identify major trends, paradigm shifts, and research directions
+      - Build a taxonomy of approaches
+      - Compare methods on key dimensions (accuracy, efficiency, scalability, etc.)
+      - Identify open problems and promising future directions
+      Save synthesis notes to literature/synthesis.md.
+    depends_on: [deep_read]
+
+  - id: report
+    agent: write
+    goal: |
+      Write a comprehensive survey report in Markdown.
+      Structure: Abstract, Introduction, Background, Taxonomy of Approaches,
+      Detailed Review (grouped by category), Comparative Analysis,
+      Open Problems & Future Directions, Conclusion, References.
+      - Aim for depth over breadth on key papers
+      - Use tables for method comparisons
+      - Every claim should be backed by a specific paper
+      Save to report/survey_report.md.
+    depends_on: [synthesis]
