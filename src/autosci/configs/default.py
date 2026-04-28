@@ -34,10 +34,10 @@ DEFAULT_CONFIG = {
         "dirs": ["~/.autosci/skills/", "./skills/"],
         "include_builtin": True,
     },
-    "task": {
-        "workspace": None,            # set by `autosci task --workspace`
-        "enable_trajectory": False,   # enabled automatically in task mode
-        "enable_understanding": False, # enabled automatically in task mode
+    "scientist": {
+        "workspace": None,            # set by `autosci scientist --workspace`
+        "enable_trajectory": False,   # enabled automatically in scientist mode
+        "enable_understanding": False, # enabled automatically in scientist mode
     },
 }
 

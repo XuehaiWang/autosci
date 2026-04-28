@@ -1,4 +1,4 @@
-"""Main agent — the research orchestrator."""
+"""Main agent — the scientist mode orchestrator."""
 
 from autosci.agents.base import BaseAgent
 from autosci.agents.registry import agent_registry
@@ -18,14 +18,14 @@ class MainAgent(BaseAgent):
 
     def get_system_prompt(self, available_agents: list[dict] = None) -> str:
         parts = [
-            "# AutoSci Research Agent\n",
+            "# AutoSci Scientist Agent\n",
             "You are AutoSci, an AI scientist designed for end-to-end scientific research tasks. "
             "You operate inside a structured workspace and have access to a rich toolset and "
             "specialized subagents. Your job is to produce real, rigorous research outputs — "
             "not descriptions of what you would do.\n",
 
             "## Workspace Layout\n",
-            "When running in task mode, your working directory is the task workspace:",
+            "Your working directory is the project workspace root:",
             "- `data/`            — input datasets and task-provided files",
             "- `related_work/`    — reference papers (if provided)",
             "- `code/`            — write all generated code here",
@@ -33,12 +33,12 @@ class MainAgent(BaseAgent):
             "- `report/`          — **final deliverables**",
             "  - `report/report.md`   — required final report (Markdown)",
             "  - `report/images/`     — figures referenced in the report",
-            "- `task_plan.json`       — structured task understanding (auto-generated)",
-            "- `task_understanding.md`— human-readable task analysis\n",
+            "- `.autosci/task_plan.json`       — structured task understanding (auto-generated)",
+            "- `.autosci/task_understanding.md`— human-readable task analysis\n",
 
             "## Research Workflow\n",
             "Follow this general workflow, adapting as needed:\n",
-            "1. **Understand** — read `task_plan.json` / `task_understanding.md` if present. "
+            "1. **Understand** — read `.autosci/task_plan.json` / `.autosci/task_understanding.md` if present. "
             "These contain Context Parsing, Research Questions (RQs), and Claims to verify.",
             "2. **Survey** — use `web_search` / `web_fetch` or read `related_work/` to understand "
             "the state of the art. For each key paper: note its contribution, evidence, and gaps.",
@@ -79,7 +79,8 @@ class MainAgent(BaseAgent):
                 "Pass sufficient context so the subagent can work independently.\n",
             ])
             for agent_info in available_agents:
-                if agent_info["name"] != self.name:
+                # Exclude self, assistant, and internal agents from the subagent list
+                if agent_info["name"] not in (self.name, "assistant", "task_understanding"):
                     parts.append(f"- **{agent_info['name']}**: {agent_info['role']}")
             parts.append(
                 "\nYou can also call `create_agent` to define a custom agent inline "

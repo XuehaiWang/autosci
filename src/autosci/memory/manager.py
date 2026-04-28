@@ -38,12 +38,19 @@ class MemoryManager:
         self._session_stack.append((session_id, task))
         self.provider.on_session_start(session_id, task)
 
-    def on_session_end(self, session_id: str, messages: list[dict], status: str) -> list[str]:
+    def on_session_end(self, session_id: str, messages: list[dict], status: str,
+                       mode: str = "scientist") -> list[str]:
         """Called when an agent run completes. Triggers reflection if successful.
-        Returns summaries of memories stored (for trajectory)."""
+
+        Args:
+            mode: "assistant" or "scientist". Assistant mode biases reflection
+                  toward extracting user preferences and habits.
+
+        Returns summaries of memories stored (for trajectory).
+        """
         stored_summaries = []
         if status == "completed" and self.llm_client:
-            stored_summaries = self._reflect_on_session(session_id, messages)
+            stored_summaries = self._reflect_on_session(session_id, messages, mode=mode)
         self.provider.on_session_end(session_id, messages)
         if self._session_stack and self._session_stack[-1][0] == session_id:
             self._session_stack.pop()
@@ -88,21 +95,39 @@ class MemoryManager:
 
     # === Post-session reflection ===
 
-    def _reflect_on_session(self, session_id: str, messages: list[dict]) -> list[str]:
+    def _reflect_on_session(self, session_id: str, messages: list[dict],
+                            mode: str = "scientist") -> list[str]:
         """Use LLM to extract memories from the session history.
         Returns summaries of stored memories (for trajectory)."""
         session_text = self._condense_messages(messages)
         if not session_text or len(session_text) < 100:
             return []
 
+        if mode == "assistant":
+            mode_instruction = (
+                "Focus especially on:\n"
+                "- User preferences and habits (preferred tools, languages, style)\n"
+                "- Recurring tasks or workflows the user frequently requests\n"
+                "- Personal context (projects, domain, timezone, terminology)\n"
+                "- Things the user explicitly asked to remember\n"
+            )
+        else:
+            mode_instruction = (
+                "Focus especially on:\n"
+                "- Key research findings and experimental results\n"
+                "- Effective workflows and methodologies discovered\n"
+                "- Surprising or non-obvious insights worth remembering\n"
+            )
+
         prompt = (
-            "Review this research session and extract memories worth keeping for future sessions.\n\n"
+            "Review this session and extract memories worth keeping for future sessions.\n\n"
             "Output a JSON array of memories. Each memory should have:\n"
             '- "type": "episodic" (what happened), "semantic" (knowledge learned), '
-            'or "procedural" (effective workflow)\n'
+            'or "procedural" (effective workflow or preference)\n'
             '- "tags": list of lowercase keywords for retrieval\n'
             '- "summary": one-line summary (under 120 chars)\n'
             '- "content": detailed description (1-3 sentences)\n\n'
+            f"{mode_instruction}\n"
             "Rules:\n"
             "- Only extract genuinely useful insights, not trivial observations\n"
             "- Skip warnings, deprecation notices, and routine tool outputs\n"

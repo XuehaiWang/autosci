@@ -28,9 +28,10 @@ class REPL:
     follow-up questions and persistent context.
     """
 
-    def __init__(self, runner: AgentRunner, agent: BaseAgent):
+    def __init__(self, runner: AgentRunner, agent: BaseAgent, mode: str = "assistant"):
         self.runner = runner
         self.agent = agent
+        self.mode = mode  # "assistant" | "scientist"
         self.console = Console()
         self.session_id = uuid.uuid4().hex[:12]
         self.messages: list[dict] = []
@@ -58,8 +59,9 @@ class REPL:
         self.runner.memory_manager.on_session_start(self.session_id, "(interactive session)")
         memory_block = self.runner.memory_manager.get_system_prompt_block()
 
-        # Match skills
-        skills_block = self.runner.skill_engine.get_prompt_block("general research")
+        # Match skills (assistant: general tasks; scientist: research-focused)
+        skill_query = "general tasks" if self.mode == "assistant" else "general research"
+        skills_block = self.runner.skill_engine.get_prompt_block(skill_query)
 
         # Initialize context engine
         context_window = self.runner.config.get("runtime", {}).get("context_window", 200000)
@@ -225,20 +227,29 @@ class REPL:
             token_usage=self.total_usage,
             tool_calls_count=self.total_tool_calls,
         )
-        self.runner._finalize_session(result, self.messages)
+        self.runner._finalize_session(result, self.messages, mode=self.mode)
         self._print_status()
         self.console.print("[dim]Session saved. Goodbye![/dim]")
 
     # === Display ===
 
     def _print_welcome(self) -> None:
+        if self.mode == "assistant":
+            title = "AutoSci Assistant"
+            hint = "Ask me anything. Use /help for commands, /quit to exit."
+            border = "green"
+        else:
+            title = "AutoSci Scientist"
+            hint = "Describe your research task. Use /help for commands, /quit to exit."
+            border = "blue"
+
         self.console.print()
         self.console.print(Panel(
-            "[bold]AutoSci Research Agent[/bold]\n"
+            f"[bold]{title}[/bold]\n"
             f"Model: {self.runner.config['llm']['model']}  |  "
             f"Session: {self.session_id}\n\n"
-            "[dim]Type your research task. Use /help for commands, /quit to exit.[/dim]",
-            border_style="blue",
+            f"[dim]{hint}[/dim]",
+            border_style=border,
         ))
 
     def _print_response(self, content: str) -> None:

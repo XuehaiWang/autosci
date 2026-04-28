@@ -99,6 +99,8 @@ class AgentRunner:
     ) -> RunResult:
         """Run an agent on a task until completion or budget exhaustion."""
         session_id = session_id or uuid.uuid4().hex[:12]
+        # Derive mode from agent name for mode-aware memory reflection
+        mode = "assistant" if agent.name == "assistant" else "scientist"
 
         # Initialize memory
         self.memory_manager.on_session_start(session_id, task)
@@ -179,7 +181,7 @@ class AgentRunner:
                     token_usage=total_usage,
                     tool_calls_count=tool_calls_count,
                 )
-                self._finalize_session(result, messages, span_id)
+                self._finalize_session(result, messages, span_id, mode=mode)
                 return result
 
             # Update token usage
@@ -206,7 +208,7 @@ class AgentRunner:
                     token_usage=total_usage,
                     tool_calls_count=tool_calls_count,
                 )
-                self._finalize_session(result, messages, span_id)
+                self._finalize_session(result, messages, span_id, mode=mode)
                 return result
 
             # Build assistant message with tool_use blocks
@@ -279,7 +281,7 @@ class AgentRunner:
             token_usage=total_usage,
             tool_calls_count=tool_calls_count,
         )
-        self._finalize_session(result, messages, span_id)
+        self._finalize_session(result, messages, span_id, mode=mode)
         return result
 
     def _finalize_session(
@@ -287,6 +289,7 @@ class AgentRunner:
         result: RunResult,
         messages: list[dict] = None,
         span_id: str = None,
+        mode: str = "scientist",
     ) -> None:
         """End the session in storage, trigger memory reflection, export, and close trajectory span."""
         self.session_store.end_session(
@@ -300,7 +303,7 @@ class AgentRunner:
         stored_summaries = []
         if messages:
             stored_summaries = self.memory_manager.on_session_end(
-                result.session_id, messages, result.status,
+                result.session_id, messages, result.status, mode=mode,
             )
 
         # Close trajectory span
@@ -352,14 +355,20 @@ class AgentRunner:
                 return None
 
     def _get_tool_definitions(self, agent) -> list[dict]:
-        """Get tool definitions filtered by agent's allowed tools."""
+        """Get tool definitions filtered by agent's allowed tools.
+
+        If agent.tools is empty, all tools are returned (unrestricted).
+        If agent.tools is non-empty, only those tools are returned.
+        Runner-intercepted tools (delegate, ask_user, etc.) are included
+        only if they appear in the agent's explicit tool list (or the agent
+        is unrestricted).
+        """
         if agent.tools:
+            # Restricted: include only what the agent declared
             names = list(agent.tools)
-            for tool_name in self._RUNNER_TOOLS:
-                if tool_name not in names:
-                    names.append(tool_name)
             return tool_registry.get_definitions(names=names)
         else:
+            # Unrestricted: all tools
             return tool_registry.get_definitions()
 
     def _handle_agent_tool(self, name: str, args: dict, context: RunContext) -> str:

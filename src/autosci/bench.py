@@ -82,6 +82,7 @@ def _bootstrap():
     import autosci.tools.skill_tools      # noqa: F401
     import autosci.tools.web_tools        # noqa: F401
     import autosci.agents.main_agent      # noqa: F401
+    import autosci.agents.assistant_agent # noqa: F401
     import autosci.task.agent             # noqa: F401
     from autosci.agents.registry import agent_registry
     agent_registry.discover_yaml()

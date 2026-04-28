@@ -1,12 +1,12 @@
 """AutoSci CLI — main entry point.
 
 Modes:
-    autosci                        Interactive REPL (assistant mode)
-    autosci "task"                 Single-shot assistant task
-    autosci task "..." -w DIR      Research Task mode with workspace
-    autosci task --from-file F -w  Read task from file
-    autosci --init                 Initialize ~/.autosci/ workspace
-    autosci -m MODEL "task"        Override model
+    autosci                            Interactive REPL (assistant mode)
+    autosci "task"                     Single-shot assistant task
+    autosci scientist "..." -w DIR     Scientist mode with workspace
+    autosci scientist --from-file F -w Read task from file
+    autosci --init                     Initialize ~/.autosci/ workspace
+    autosci -m MODEL "task"            Override model
 """
 
 import argparse
@@ -26,6 +26,7 @@ def _bootstrap():
     import autosci.tools.skill_tools      # noqa: F401
     import autosci.tools.web_tools        # noqa: F401
     import autosci.agents.main_agent      # noqa: F401
+    import autosci.agents.assistant_agent # noqa: F401
     import autosci.task.agent             # noqa: F401
     from autosci.agents.registry import agent_registry
     agent_registry.discover_yaml()
@@ -61,42 +62,43 @@ def _init_workspace():
 
 # ── Workspace setup ────────────────────────────────────────────────────────────
 
-def _init_task_workspace(workspace: str) -> str:
-    """Create task workspace directory structure. Returns absolute path."""
+def _init_scientist_workspace(workspace: str) -> tuple[str, str]:
+    """Create scientist workspace structure. Returns (workspace, autosci_dir).
+
+    .autosci/ holds all internal files (db, trajectory, memory, sessions).
+    Research directories (data/, code/, outputs/, report/) stay at the workspace root.
+    """
     workspace = os.path.abspath(workspace)
-    subdirs = [
-        "trajectory",
-        "memory/episodic",
-        "memory/semantic",
-        "memory/procedural",
-        "sessions",
-        "data",
-        "code",
-        "outputs",
-        "report/images",
-    ]
-    for sub in subdirs:
+    autosci_dir = os.path.join(workspace, ".autosci")
+
+    # Internal dirs inside .autosci/
+    for sub in ["trajectory", "memory/episodic", "memory/semantic", "memory/procedural", "sessions"]:
+        os.makedirs(os.path.join(autosci_dir, sub), exist_ok=True)
+
+    # User-facing research dirs at workspace root
+    for sub in ["data", "code", "outputs", "report/images"]:
         os.makedirs(os.path.join(workspace, sub), exist_ok=True)
-    return workspace
+
+    return workspace, autosci_dir
 
 
-def _build_task_config(base_config: dict, workspace: str, share_memory: bool = False) -> dict:
-    """Build config overrides for task mode (workspace-local paths)."""
+def _build_scientist_config(base_config: dict, autosci_dir: str, share_memory: bool = False) -> dict:
+    """Build config overrides for scientist mode (.autosci/ local paths)."""
     import copy
     config = copy.deepcopy(base_config)
 
-    # Storage: workspace-local SQLite + sessions/
-    config["storage"]["db_path"] = os.path.join(workspace, "sessions.db")
-    config["storage"]["export_dir"] = os.path.join(workspace, "sessions")
+    # Storage: .autosci/-local SQLite + sessions/
+    config["storage"]["db_path"] = os.path.join(autosci_dir, "sessions.db")
+    config["storage"]["export_dir"] = os.path.join(autosci_dir, "sessions")
 
-    # Memory: workspace-local unless --share-memory
+    # Memory: .autosci/-local unless --share-memory
     if not share_memory:
-        config["memory"]["base_dir"] = os.path.join(workspace, "memory")
+        config["memory"]["base_dir"] = os.path.join(autosci_dir, "memory")
 
-    # Task flags
-    config["task"]["workspace"] = workspace
-    config["task"]["enable_trajectory"] = True
-    config["task"]["enable_understanding"] = True
+    # Scientist flags
+    config["scientist"]["workspace"] = os.path.dirname(autosci_dir)  # the actual project root
+    config["scientist"]["enable_trajectory"] = True
+    config["scientist"]["enable_understanding"] = True
 
     return config
 
@@ -105,10 +107,10 @@ def _build_task_config(base_config: dict, workspace: str, share_memory: bool = F
 
 def _run_assistant(args, config):
     """Run in assistant mode (REPL or single-shot)."""
-    from autosci.agents.main_agent import MainAgent
+    from autosci.agents.assistant_agent import AssistantAgent
     from autosci.runtime.runner import AgentRunner
 
-    agent = MainAgent()
+    agent = AssistantAgent()
     if args.max_iterations:
         agent.max_iterations = args.max_iterations
 
@@ -116,7 +118,7 @@ def _run_assistant(args, config):
 
     if args.interactive or not getattr(args, "task_str", None):
         from autosci.runtime.repl import REPL
-        repl = REPL(runner, agent)
+        repl = REPL(runner, agent, mode="assistant")
         repl.run()
     else:
         from rich.console import Console
@@ -130,10 +132,10 @@ def _run_assistant(args, config):
         console.print(Markdown(result.response))
 
 
-# ── Research Task mode ─────────────────────────────────────────────────────────
+# ── Scientist mode ─────────────────────────────────────────────────────────────
 
-def _run_task(args):
-    """Run in research task mode with workspace (agent-driven or workflow-driven)."""
+def _run_scientist(args):
+    """Run in scientist mode with workspace (agent-driven or workflow-driven)."""
     from rich.console import Console
     from rich.panel import Panel
     from rich.markdown import Markdown
@@ -145,9 +147,9 @@ def _run_task(args):
     if args.model:
         base_config["llm"]["model"] = args.model
 
-    # Resolve workspace
+    # Resolve workspace and .autosci/ dir
     workspace = os.path.abspath(args.workspace)
-    workspace = _init_task_workspace(workspace)
+    workspace, autosci_dir = _init_scientist_workspace(workspace)
 
     # Resolve task string
     task = _resolve_task(args, workspace)
@@ -156,8 +158,8 @@ def _run_task(args):
                       "--from-file, or place task.md in the workspace.[/red]")
         sys.exit(1)
 
-    # Build task-mode config
-    config = _build_task_config(base_config, workspace, share_memory=args.share_memory)
+    # Build scientist-mode config
+    config = _build_scientist_config(base_config, autosci_dir, share_memory=args.share_memory)
 
     # Bootstrap
     _bootstrap()
@@ -184,19 +186,19 @@ def _run_task(args):
     mode_label = f"workflow: {workflow_def.name}" if workflow_def else "agent-driven"
 
     console.print(Panel(
-        f"[bold]AutoSci Research Task[/bold]\n"
+        f"[bold]AutoSci Scientist Mode[/bold]\n"
         f"Workspace: {workspace}\n"
         f"Model: {config['llm']['model']}\n"
         f"Mode: {mode_label}",
         border_style="blue",
     ))
 
-    # Trajectory recorder (created before runner so runner can record from the start)
+    # Trajectory recorder (inside .autosci/trajectory/)
     recorder = None
-    if config["task"]["enable_trajectory"]:
+    if config["scientist"]["enable_trajectory"]:
         import datetime
         from autosci.trajectory.schemas import TrajectoryEvent
-        traj_dir = os.path.join(workspace, "trajectory")
+        traj_dir = os.path.join(autosci_dir, "trajectory")
         recorder = TrajectoryRecorder(traj_dir)
         if workflow_def:
             recorder.record_event(TrajectoryEvent(
@@ -210,13 +212,13 @@ def _run_task(args):
     # Runner is created early — shared by TaskUnderstanding and main agent
     runner = AgentRunner(config, trajectory_recorder=recorder)
 
-    # Task understanding — runs for both agent-driven and workflow-driven modes
+    # Task understanding
     task_plan = None
-    if config["task"]["enable_understanding"]:
+    if config["scientist"]["enable_understanding"]:
         console.print("[dim]Analyzing task...[/dim]")
         understanding = TaskUnderstanding(runner, workspace)
         task_plan = understanding.analyze(task)
-        plan_path = save_task_plan(task_plan, workspace)
+        plan_path = save_task_plan(task_plan, autosci_dir)  # saved into .autosci/
         console.print(f"[dim]Task plan saved → {plan_path}[/dim]")
         console.print(Panel(
             f"**Goal**: {task_plan.goal}\n\n"
@@ -439,8 +441,8 @@ def main():
             "examples:\n"
             "  autosci                            Start interactive REPL (assistant)\n"
             "  autosci \"explain this paper\"       Single-shot assistant task\n"
-            "  autosci task \"reproduce X\" -w ./exp  Research task with workspace\n"
-            "  autosci task --from-file t.md -w ./exp\n"
+            "  autosci scientist \"reproduce X\" -w ./exp  Scientist mode with workspace\n"
+            "  autosci scientist --from-file t.md -w ./exp\n"
             "  autosci --init                     Initialize ~/.autosci/ workspace\n"
         ),
     )
@@ -452,22 +454,22 @@ def main():
 
     subparsers = parser.add_subparsers(dest="mode")
 
-    # ── task subcommand ──
-    task_parser = subparsers.add_parser(
-        "task",
-        help="Run a research task with workspace",
+    # ── scientist subcommand ──
+    scientist_parser = subparsers.add_parser(
+        "scientist",
+        help="Run a scientific research task with workspace",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    task_parser.add_argument("task_str", nargs="?", default=None, help="Task description")
-    task_parser.add_argument("-w", "--workspace", required=True, help="Workspace directory")
-    task_parser.add_argument("--from-file", dest="from_file", default=None,
-                             help="Read task from a file")
-    task_parser.add_argument("--share-memory", action="store_true",
-                             help="Share memory with global ~/.autosci/memory/")
-    task_parser.add_argument("--workflow", default=None,
-                             help="Use workflow-driven mode (e.g. reproduce, survey)")
-    task_parser.add_argument("-m", "--model", help="Override LLM model")
-    task_parser.add_argument("--max-iterations", type=int, default=None)
+    scientist_parser.add_argument("task_str", nargs="?", default=None, help="Task description")
+    scientist_parser.add_argument("-w", "--workspace", required=True, help="Workspace directory")
+    scientist_parser.add_argument("--from-file", dest="from_file", default=None,
+                                  help="Read task from a file")
+    scientist_parser.add_argument("--share-memory", action="store_true",
+                                  help="Share memory with global ~/.autosci/memory/")
+    scientist_parser.add_argument("--workflow", default=None,
+                                  help="Use workflow-driven mode (e.g. reproduce, survey)")
+    scientist_parser.add_argument("-m", "--model", help="Override LLM model")
+    scientist_parser.add_argument("--max-iterations", type=int, default=None)
 
     # ── workflow subcommand ──
     workflow_parser = subparsers.add_parser(
@@ -525,9 +527,9 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    # Research Task mode
-    if args.mode == "task":
-        _run_task(args)
+    # Scientist mode
+    if args.mode == "scientist":
+        _run_scientist(args)
         return
 
     # Workflow management mode
