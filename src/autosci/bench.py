@@ -174,10 +174,8 @@ def main():
     from autosci.agents.main_agent import MainAgent
     from autosci.runtime.runner import AgentRunner
     from autosci.trajectory.recorder import TrajectoryRecorder
-
-    agent = MainAgent()
-    if args.max_iterations:
-        agent.max_iterations = args.max_iterations
+    from autosci.task.understanding import TaskUnderstanding
+    from autosci.task.schemas import save_task_plan
 
     # Trajectory recorder — writes to .autosci/trajectory/
     traj_dir = os.path.join(autosci_dir, "trajectory")
@@ -189,14 +187,34 @@ def main():
         "agent_info",
         model=config["llm"]["model"],
         provider=config["llm"]["provider"],
-        max_iterations=agent.max_iterations,
+        max_iterations=MainAgent.max_iterations,
     )
 
-    # ── Run ────────────────────────────────────────────────────────────────
-    result = runner.run(agent, task)
+    # ── Task understanding (mirrors cli._run_scientist) ────────────────────
+    _emit("task_understanding", status="start")
+    understanding = TaskUnderstanding(runner, workspace)
+    task_plan = understanding.analyze(args.message.strip())
+    save_task_plan(task_plan, autosci_dir)
+    _emit("task_understanding", status="done",
+          goal=task_plan.goal,
+          claims=len(task_plan.claims),
+          rqs=len(task_plan.research_questions))
+
+    # Inject task plan into the prompt (same as cli._run_scientist)
+    full_task = task + "\n\n" + task_plan.to_prompt_block()
+
+    # ── Run main agent ─────────────────────────────────────────────────────
+    agent = MainAgent()
+    if args.max_iterations:
+        agent.max_iterations = args.max_iterations
+
+    result = runner.run(agent, full_task)
 
     # Export trajectory report to .autosci/trajectory/
-    traj_report = runner.export_trajectory(task=args.message.strip())
+    traj_report = runner.export_trajectory(
+        task=args.message.strip(),
+        task_plan=task_plan.to_dict(),
+    )
     if traj_report:
         _emit("trajectory", path=traj_report)
 
