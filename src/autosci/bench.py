@@ -140,6 +140,11 @@ def main():
 
     os.chdir(workspace)
 
+    # Create .autosci/ internal dirs (mirrors _init_scientist_workspace in cli.py)
+    autosci_dir = os.path.join(workspace, ".autosci")
+    for sub in ["trajectory", "memory/episodic", "memory/semantic", "memory/procedural", "sessions"]:
+        os.makedirs(os.path.join(autosci_dir, sub), exist_ok=True)
+
     # Ensure required output directories exist
     os.makedirs(os.path.join(workspace, "report", "images"), exist_ok=True)
     os.makedirs(os.path.join(workspace, "code"), exist_ok=True)
@@ -157,18 +162,28 @@ def main():
         overrides = {"llm": {"model": args.model}}
     config = load_config(overrides)
 
+    # Point storage and memory into .autosci/ (mirrors _build_scientist_config)
+    config["storage"]["db_path"] = os.path.join(autosci_dir, "sessions.db")
+    config["storage"]["export_dir"] = os.path.join(autosci_dir, "sessions")
+    config["memory"]["base_dir"] = os.path.join(autosci_dir, "memory")
+
     # ── Bootstrap tools and agents ─────────────────────────────────────────
     _bootstrap()
 
     # ── Create agent and runner ────────────────────────────────────────────
     from autosci.agents.main_agent import MainAgent
     from autosci.runtime.runner import AgentRunner
+    from autosci.trajectory.recorder import TrajectoryRecorder
 
     agent = MainAgent()
     if args.max_iterations:
         agent.max_iterations = args.max_iterations
 
-    runner = AgentRunner(config)
+    # Trajectory recorder — writes to .autosci/trajectory/
+    traj_dir = os.path.join(autosci_dir, "trajectory")
+    recorder = TrajectoryRecorder(traj_dir)
+
+    runner = AgentRunner(config, trajectory_recorder=recorder)
 
     _emit(
         "agent_info",
@@ -179,6 +194,11 @@ def main():
 
     # ── Run ────────────────────────────────────────────────────────────────
     result = runner.run(agent, task)
+
+    # Export trajectory report to .autosci/trajectory/
+    traj_report = runner.export_trajectory(task=args.message.strip())
+    if traj_report:
+        _emit("trajectory", path=traj_report)
 
     _emit(
         "usage",
