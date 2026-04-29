@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 # Recency half-life in seconds (7 days)
 RECENCY_HALF_LIFE = 7 * 24 * 3600
 
+# Minimum relevance score to inject into system prompt.
+# When tag+keyword scores are both 0, total ≈ recency * 0.2 ≈ 0.11 for a week-old memory.
+# Setting threshold above that ensures only memories with actual keyword overlap get injected.
+_INJECT_SCORE_THRESHOLD = 0.15
+
 
 class FileMemoryProvider(MemoryProvider):
     """File-system-based memory storage.
@@ -112,10 +117,13 @@ class FileMemoryProvider(MemoryProvider):
             keyword_score = self._keyword_score(query_keywords, meta.get("summary", ""))
             recency_score = self._recency_score(meta.get("updated", meta.get("created", "")))
 
+            # Require at least some keyword or tag overlap — pure recency is not relevance.
+            if tag_score == 0.0 and keyword_score == 0.0:
+                continue
+
             total = tag_score * 0.4 + keyword_score * 0.4 + recency_score * 0.2
 
-            if total > 0.01:
-                scored.append((mem_id, meta, total))
+            scored.append((mem_id, meta, total))
 
         scored.sort(key=lambda x: x[2], reverse=True)
         top = scored[:limit]
@@ -147,11 +155,13 @@ class FileMemoryProvider(MemoryProvider):
                 self.retrieve(task, memory_type="semantic", limit=5)
                 + self.retrieve(task, memory_type="procedural", limit=5)
             )
-            # Re-sort by relevance score
+            # Re-sort by relevance score, then drop anything with no keyword/tag overlap.
+            # Pure recency (tag=0, keyword=0) means the memory is unrelated — don't inject it.
             memories.sort(key=lambda m: m.relevance_score, reverse=True)
+            memories = [m for m in memories if m.relevance_score >= _INJECT_SCORE_THRESHOLD]
             memories = memories[:8]
         else:
-            # No task context: show recent semantic + procedural only
+            # No task context: show recent semantic + procedural only (no threshold)
             all_mems = sorted(
                 [m for m in self._index.values() if m["type"] in ("semantic", "procedural")],
                 key=lambda m: m.get("updated", ""),
@@ -240,7 +250,12 @@ class FileMemoryProvider(MemoryProvider):
         if not query_keywords or not text:
             return 0.0
         text_lower = text.lower()
-        matches = sum(1 for kw in query_keywords if kw in text_lower)
+        # Use word-boundary matching to avoid false positives like
+        # "train" matching "constraints" or "net" matching "network".
+        matches = sum(
+            1 for kw in query_keywords
+            if re.search(r"\b" + re.escape(kw) + r"\b", text_lower)
+        )
         return matches / max(len(query_keywords), 1)
 
     def _recency_score(self, timestamp: str) -> float:
