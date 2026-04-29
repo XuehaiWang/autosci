@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from autosci.context.compressor import SummarizationCompressor
@@ -33,10 +34,19 @@ class AgentRunner:
 
     Integrates session storage, context compression, memory system,
     and optional trajectory recording.
+
+    Child runners created via _make_child_runner() share the parent's
+    llm_client, memory_manager, skill_engine, session_store, and trajectory
+    recorder, but each get their own context_engine so context state is
+    fully isolated. This allows parallel subagent execution via
+    ThreadPoolExecutor without shared mutable state conflicts.
     """
 
     # Tools intercepted by the runner instead of dispatched to the registry
-    _RUNNER_TOOLS = {"delegate", "ask_user", "create_agent", "update_claim"}
+    _RUNNER_TOOLS = {"delegate", "delegate_parallel", "ask_user", "create_agent", "update_claim"}
+
+    # Maximum number of subagents that can run in parallel
+    MAX_PARALLEL_SUBAGENTS = 8
 
     def __init__(self, config: dict, trajectory_recorder: Optional[TrajectoryRecorder] = None):
         self.config = config
@@ -90,6 +100,54 @@ class AgentRunner:
         from autosci.tools.skill_tools import set_skill_engine
         set_skill_engine(self.skill_engine)
 
+    def _make_child_runner(self) -> "AgentRunner":
+        """Create a lightweight child runner for subagent execution.
+
+        The child shares the parent's heavy resources (llm_client, memory_manager,
+        skill_engine, session_store, trajectory) to avoid redundant initialisation
+        and to keep all subagents writing to the same session DB and trajectory.
+
+        Each child gets its own context_engine so context-window state is fully
+        isolated — this is the only mutable per-run resource that must not be shared.
+
+        The child does NOT call set_memory_manager / set_skill_engine globally;
+        instead it sets them on the current thread via threading.local so parallel
+        children never overwrite each other's references.
+        """
+        child = object.__new__(AgentRunner)
+        child.config = self.config
+        child.llm_client = self.llm_client          # shared, stateless per-call
+        child.prompt_builder = PromptBuilder()
+        child.error_handler = ErrorHandler()
+        child.trajectory = self.trajectory           # shared, thread-safe writes
+        child.session_store = self.session_store     # shared, SQLite WAL is concurrent-safe
+        child.session_exporter = self.session_exporter
+        child.auto_export = self.auto_export
+        child.export_dir = self.export_dir
+        child.memory_manager = self.memory_manager  # shared, file-based provider is safe
+        child.skill_engine = self.skill_engine       # shared, read-only after init
+
+        # Each child gets its own context engine (mutable per-session state)
+        runtime_config = self.config.get("runtime", {})
+        child.context_engine = SummarizationCompressor(
+            context_window=runtime_config.get("context_window", 200000),
+            threshold_ratio=runtime_config.get("compression_threshold", 0.75),
+            llm_client=self.llm_client,
+        )
+        return child
+
+    def _inject_thread_locals(self) -> None:
+        """Inject memory_manager and skill_engine into thread-local storage.
+
+        Must be called at the start of any thread that will execute tool calls,
+        so that memory_tools and skill_tools resolve the correct instances for
+        this thread rather than a stale reference from another thread.
+        """
+        from autosci.tools.memory_tools import set_memory_manager
+        from autosci.tools.skill_tools import set_skill_engine
+        set_memory_manager(self.memory_manager)
+        set_skill_engine(self.skill_engine)
+
     def run(
         self,
         agent,
@@ -101,6 +159,10 @@ class AgentRunner:
         session_id = session_id or uuid.uuid4().hex[:12]
         # Derive mode from agent name for mode-aware memory reflection
         mode = "assistant" if agent.name == "assistant" else "scientist"
+
+        # Ensure this thread's tool globals point to our instances (needed for
+        # child runners executing in worker threads).
+        self._inject_thread_locals()
 
         # Initialize memory
         self.memory_manager.on_session_start(session_id, task)
@@ -372,9 +434,11 @@ class AgentRunner:
             return tool_registry.get_definitions()
 
     def _handle_agent_tool(self, name: str, args: dict, context: RunContext) -> str:
-        """Handle runner-intercepted tools (delegate, ask_user, create_agent, update_claim)."""
+        """Handle runner-intercepted tools (delegate, delegate_parallel, ask_user, create_agent, update_claim)."""
         if name == "delegate":
             return self._handle_delegate(args, context)
+        elif name == "delegate_parallel":
+            return self._handle_delegate_parallel(args, context)
         elif name == "ask_user":
             return self._handle_ask_user(args)
         elif name == "create_agent":
@@ -384,7 +448,7 @@ class AgentRunner:
         return f"Error: unknown agent tool: {name}"
 
     def _handle_delegate(self, args: dict, parent_context: RunContext) -> str:
-        """Spawn a child agent run for delegation."""
+        """Spawn a child runner for a single delegated subtask."""
         agent_name = args.get("agent", "")
         task = args.get("task", "")
         extra_context = args.get("context", "")
@@ -403,11 +467,11 @@ class AgentRunner:
 
         logger.info(f"Delegating to '{agent_name}': {task[:80]}")
 
-        # Record delegation event in trajectory
         if self.trajectory and parent_context.span_id:
             self.trajectory.record_delegation(parent_context.span_id, agent_name, task)
 
-        child_result = self.run(
+        child_runner = self._make_child_runner()
+        child_result = child_runner.run(
             agent=agent,
             task=full_task,
             parent_context=parent_context,
@@ -421,6 +485,75 @@ class AgentRunner:
             f"[Subagent '{agent_name}' result]{status_note}\n\n"
             f"{child_result.response}"
         )
+
+    def _handle_delegate_parallel(self, args: dict, parent_context: RunContext) -> str:
+        """Spawn multiple child runners in parallel via ThreadPoolExecutor.
+
+        Args schema:
+            tasks: list of {agent, task, context?} dicts — each becomes one subagent run.
+        """
+        tasks = args.get("tasks")
+        if not tasks or not isinstance(tasks, list):
+            return "Error: delegate_parallel requires a 'tasks' list"
+        if len(tasks) > self.MAX_PARALLEL_SUBAGENTS:
+            return (
+                f"Error: too many parallel tasks ({len(tasks)}); "
+                f"maximum is {self.MAX_PARALLEL_SUBAGENTS}"
+            )
+
+        # Resolve agents up-front so we fail fast before spawning threads
+        resolved = []
+        for i, t in enumerate(tasks):
+            agent_name = t.get("agent", "")
+            task_text = t.get("task", "")
+            if not agent_name or not task_text:
+                return f"Error: tasks[{i}] missing 'agent' or 'task'"
+            try:
+                agent = agent_registry.get(agent_name)
+            except KeyError as e:
+                return str(e)
+            extra_context = t.get("context", "")
+            full_task = task_text
+            if extra_context:
+                full_task = f"{task_text}\n\n## Context\n\n{extra_context}"
+            resolved.append((i, agent_name, agent, full_task))
+
+        logger.info(f"delegate_parallel: launching {len(resolved)} subagents in parallel")
+
+        if self.trajectory and parent_context.span_id:
+            for _, agent_name, _, task_text in resolved:
+                self.trajectory.record_delegation(parent_context.span_id, agent_name, task_text)
+
+        results_by_index: dict[int, str] = {}
+
+        def _run_child(idx: int, agent_name: str, agent, full_task: str) -> tuple[int, str]:
+            child_runner = self._make_child_runner()
+            child_result = child_runner.run(
+                agent=agent,
+                task=full_task,
+                parent_context=parent_context,
+            )
+            status_note = ""
+            if child_result.status != "completed":
+                status_note = f"\n[Note: subagent ended with status '{child_result.status}']"
+            return idx, f"[Subagent '{agent_name}' result]{status_note}\n\n{child_result.response}"
+
+        with ThreadPoolExecutor(max_workers=len(resolved)) as executor:
+            futures = {
+                executor.submit(_run_child, idx, agent_name, agent, full_task): idx
+                for idx, agent_name, agent, full_task in resolved
+            }
+            for future in as_completed(futures):
+                try:
+                    idx, result_str = future.result()
+                    results_by_index[idx] = result_str
+                except Exception as exc:
+                    idx = futures[future]
+                    results_by_index[idx] = f"[Subagent {idx} error]: {exc}"
+
+        # Return results in original task order
+        parts = [results_by_index[i] for i in range(len(resolved))]
+        return "\n\n---\n\n".join(parts)
 
     def _handle_create_agent(self, args: dict, parent_context: RunContext) -> str:
         """Instantiate a DynamicAgent from inline definition and run it."""
@@ -454,7 +587,8 @@ class AgentRunner:
         if self.trajectory and parent_context.span_id:
             self.trajectory.record_delegation(parent_context.span_id, name, task)
 
-        child_result = self.run(
+        child_runner = self._make_child_runner()
+        child_result = child_runner.run(
             agent=agent,
             task=task,
             parent_context=parent_context,
@@ -489,7 +623,7 @@ class AgentRunner:
     def _handle_update_claim(self, args: dict, context: RunContext) -> str:
         """Update a Claim's status in workspace/task_plan.json and record in trajectory."""
         import datetime
-        from autosci.task.schemas import load_task_plan, save_task_plan
+        from autosci.protocols.task_plan import load_task_plan, save_task_plan
         from autosci.trajectory.schemas import TrajectoryEvent
 
         claim_id = args.get("claim_id", "").strip()

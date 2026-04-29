@@ -27,7 +27,7 @@ def _bootstrap():
     import autosci.tools.web_tools        # noqa: F401
     import autosci.agents.main_agent      # noqa: F401
     import autosci.agents.assistant_agent # noqa: F401
-    import autosci.task.agent             # noqa: F401
+    import autosci.agents.topic_agent      # noqa: F401
     from autosci.agents.registry import agent_registry
     agent_registry.discover_yaml()
 
@@ -135,151 +135,60 @@ def _run_assistant(args, config):
 # ── Scientist mode ─────────────────────────────────────────────────────────────
 
 def _run_scientist(args):
-    """Run in scientist mode with workspace (agent-driven or workflow-driven)."""
+    """Run in scientist mode — thin CLI wrapper around run_scientist()."""
     from rich.console import Console
     from rich.panel import Panel
     from rich.markdown import Markdown
+    from autosci.scientist import run_scientist
+
     console = Console()
 
-    # Load config
-    from autosci.configs.default import load_config
-    base_config = load_config()
-    if args.model:
-        base_config["llm"]["model"] = args.model
-
-    # Resolve workspace and .autosci/ dir
+    # Resolve workspace early so we can read task files from it
     workspace = os.path.abspath(args.workspace)
-    workspace, autosci_dir = _init_scientist_workspace(workspace)
+    os.makedirs(workspace, exist_ok=True)
 
-    # Resolve task string
     task = _resolve_task(args, workspace)
     if not task:
         console.print("[red]Error: no task provided. Use a positional argument, "
                       "--from-file, or place task.md in the workspace.[/red]")
         sys.exit(1)
 
-    # Build scientist-mode config
-    config = _build_scientist_config(base_config, autosci_dir, share_memory=args.share_memory)
-
-    # Bootstrap
-    _bootstrap()
-
-    from autosci.agents.main_agent import MainAgent
-    from autosci.runtime.runner import AgentRunner
-    from autosci.trajectory.recorder import TrajectoryRecorder
-    from autosci.task.understanding import TaskUnderstanding
-    from autosci.task.schemas import save_task_plan
-
-    # Resolve workflow (if --workflow flag given)
-    workflow_def = None
     workflow_name = getattr(args, "workflow", None)
-    if workflow_name:
-        from autosci.workflow.engine import load_workflow, find_workflow
-        wf_path = find_workflow(workflow_name)
-        if not wf_path:
-            console.print(f"[red]Workflow '{workflow_name}' not found. "
-                          f"Run `autosci workflow list` to see available workflows.[/red]")
-            sys.exit(1)
-        workflow_def = load_workflow(wf_path)
 
-    # Determine mode label
-    mode_label = f"workflow: {workflow_def.name}" if workflow_def else "agent-driven"
-
-    console.print(Panel(
-        f"[bold]AutoSci Scientist Mode[/bold]\n"
-        f"Workspace: {workspace}\n"
-        f"Model: {config['llm']['model']}\n"
-        f"Mode: {mode_label}",
-        border_style="blue",
-    ))
-
-    # Trajectory recorder (inside .autosci/trajectory/)
-    recorder = None
-    if config["scientist"]["enable_trajectory"]:
-        import datetime
-        from autosci.trajectory.schemas import TrajectoryEvent
-        traj_dir = os.path.join(autosci_dir, "trajectory")
-        recorder = TrajectoryRecorder(traj_dir)
-        if workflow_def:
-            recorder.record_event(TrajectoryEvent(
-                event_type="workflow_start",
-                timestamp=datetime.datetime.now().isoformat(timespec="seconds"),
-                span_id="",
-                agent_name="system",
-                data={"workflow": workflow_def.name, "phases": [p.id for p in workflow_def.phases]},
+    def on_event(event: str, data: dict):
+        if event == "workspace_ready":
+            from autosci.configs.default import load_config
+            cfg = load_config()
+            if args.model:
+                cfg["llm"]["model"] = args.model
+            mode_label = f"workflow: {workflow_name}" if workflow_name else "agent-driven"
+            console.print(Panel(
+                f"[bold]AutoSci Scientist Mode[/bold]\n"
+                f"Workspace: {data['workspace']}\n"
+                f"Model: {cfg['llm']['model']}\n"
+                f"Mode: {mode_label}",
+                border_style="blue",
             ))
+        elif event == "task_plan":
+            console.print(f"[dim]Task plan ready — goal: {data.get('goal', '')[:80]}[/dim]")
+        elif event == "trajectory":
+            console.print(f"[dim]Trajectory report → {data['path']}[/dim]")
 
-    # Runner is created early — shared by TaskUnderstanding and main agent
-    runner = AgentRunner(config, trajectory_recorder=recorder)
-
-    # Task understanding
-    task_plan = None
-    if config["scientist"]["enable_understanding"]:
-        console.print("[dim]Analyzing task...[/dim]")
-        understanding = TaskUnderstanding(runner, workspace)
-        task_plan = understanding.analyze(task)
-        plan_path = save_task_plan(task_plan, autosci_dir)  # saved into .autosci/
-        console.print(f"[dim]Task plan saved → {plan_path}[/dim]")
-        console.print(Panel(
-            f"**Goal**: {task_plan.goal}\n\n"
-            + (f"**RQs**: {len(task_plan.research_questions)}\n" if task_plan.research_questions else "")
-            + (f"**Claims**: {len(task_plan.claims)}\n" if task_plan.claims else "")
-            + (f"**Agents**: {', '.join(task_plan.suggested_agents)}" if task_plan.suggested_agents else ""),
-            title="Task Plan",
-            border_style="cyan",
-        ))
-        if recorder:
-            recorder.record_event(TrajectoryEvent(
-                event_type="task_plan",
-                timestamp=datetime.datetime.now().isoformat(timespec="seconds"),
-                span_id="",
-                agent_name="system",
-                data=task_plan.to_dict(),
-            ))
-    os.chdir(workspace)
-
-    # ── Workflow-driven mode ──────────────────────────────────────────────────
-    if workflow_def:
-        from autosci.workflow.engine import WorkflowEngine
-        engine = WorkflowEngine(runner)
-
-        console.print(f"\n[bold]Workflow phases:[/bold] "
-                      f"{' → '.join(p.id for p in workflow_def.phases)}\n")
-
-        wf_result = engine.run(workflow_def, task, task_plan=task_plan, console=console)
-
-        result_path = engine.save_result(wf_result, workspace)
-        console.print(f"\n[dim]Workflow result → {result_path}[/dim]")
-
-        status_style = "green" if wf_result.status == "completed" else "yellow"
-        console.print(
-            f"\n[{status_style}]Workflow {wf_result.status}[/{status_style}] | "
-            f"Tokens: {wf_result.total_tokens:,} | "
-            f"Tool calls: {wf_result.total_tool_calls}"
-        )
-        console.print(Markdown(wf_result.final_output))
-        return
-
-    # ── Agent-driven mode ─────────────────────────────────────────────────────
-    full_task = task
-    if task_plan:
-        full_task = task + "\n\n" + task_plan.to_prompt_block()
-
-    agent = MainAgent()
-    if args.max_iterations:
-        agent.max_iterations = args.max_iterations
-
-    result = runner.run(agent, full_task)
-
-    if recorder:
-        report_path = runner.export_trajectory(
+    try:
+        result = run_scientist(
             task=task,
-            task_plan=task_plan.to_dict() if task_plan else None,
+            workspace=workspace,
+            model=getattr(args, "model", None),
+            max_iterations=getattr(args, "max_iterations", None),
+            workflow_name=workflow_name,
+            share_memory=getattr(args, "share_memory", False),
+            on_event=on_event,
         )
-        if report_path:
-            console.print(f"[dim]Trajectory report → {report_path}[/dim]")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
 
-    status_style = "green" if result.status == "completed" else "yellow"
+    status_style = "green" if result.status in ("completed", "budget_exhausted") else "yellow"
     console.print(f"\n[{status_style}]Status: {result.status}[/{status_style}] | "
                   f"Tokens: {result.token_usage.total_tokens:,} | "
                   f"Tool calls: {result.tool_calls_count}")

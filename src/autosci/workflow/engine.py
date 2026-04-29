@@ -11,7 +11,7 @@ from autosci.workflow.schemas import WorkflowDef, PhaseResult, WorkflowResult
 
 if TYPE_CHECKING:
     from autosci.runtime.runner import AgentRunner
-    from autosci.task.schemas import TaskPlan
+    from autosci.protocols.task_plan import TaskPlan
 
 logger = logging.getLogger(__name__)
 

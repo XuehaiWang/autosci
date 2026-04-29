@@ -1,10 +1,16 @@
-"""Task understanding schemas — structured output of the TaskUnderstandingAgent.
+"""Task plan schemas — structured output of the task understanding pipeline.
 
-Replaces the old simple TaskPlan with a richer structure:
-  - TaskContext: parsed from the task description (Context Parsing)
-  - RelatedWork: extracted from each paper (Contribution Extraction)
-  - Claim: a verifiable hypothesis with supporting rationale
-  - ResearchQuestion: derived from context + related work gap
+Shared data protocol consumed by:
+  - workflow/understanding.py  (produces TaskPlan)
+  - agents/main_agent.py       (injects TaskPlan into prompt)
+  - workflow/engine.py         (uses TaskPlan.to_prompt_block in phases)
+  - runtime/runner.py          (update_claim tool reads/writes task_plan.json)
+
+Structure:
+  - TaskContext: parsed from the task description
+  - RelatedWork: extracted from each paper
+  - Claim: a verifiable hypothesis
+  - ResearchQuestion: derived from context + literature gap
   - TaskPlan: the complete understanding artifact
 """
 
@@ -199,8 +205,12 @@ class TaskPlan:
 
     @classmethod
     def fallback(cls, task: str) -> "TaskPlan":
-        """Minimal plan when understanding fails."""
-        return cls(raw_task=task, mode="task_given", goal=task[:200])
+        """Minimal plan when understanding fails — use raw task as goal, no claims."""
+        # Truncate to first sentence or 200 chars, whichever is shorter,
+        # to avoid filling goal with a multi-paragraph system prompt.
+        first_sentence = task.split("\n")[0].split(". ")[0]
+        goal = first_sentence[:200] if len(first_sentence) > 200 else first_sentence
+        return cls(raw_task=task, mode="task_given", goal=goal)
 
     def to_prompt_block(self) -> str:
         """Format for injection into the main agent's system prompt."""
