@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Optional
 
 from autosci.agents.base import BaseAgent
 
 logger = logging.getLogger(__name__)
+
+# Tools that require runner-level orchestration and are therefore not available
+# to YAML-defined agents (which are always leaf nodes in the delegation tree).
+_ORCHESTRATION_TOOLS = {"delegate", "delegate_parallel", "create_agent", "update_claim"}
 
 
 class DynamicAgent(BaseAgent):
@@ -17,6 +20,11 @@ class DynamicAgent(BaseAgent):
     Created by AgentRegistry when discover_yaml() loads a *.yaml agent definition.
     The class attributes (name, role, tools, max_iterations) are set per-instance
     from the YAML, and get_system_prompt() returns the YAML-specified system_prompt.
+
+    Design constraint: DynamicAgent is always a *leaf* agent — it cannot delegate
+    to subagents. Orchestration tools (delegate, delegate_parallel, create_agent,
+    update_claim) are stripped from its tool list at construction time. If you need
+    an agent that can orchestrate, subclass BaseAgent in Python instead.
     """
 
     # Instance-level overrides (set in __init__)
@@ -37,11 +45,22 @@ class DynamicAgent(BaseAgent):
         self.name = name
         self.role = role
         self._system_prompt = system_prompt
-        self.tools = tools or []
+        # Strip orchestration tools — DynamicAgent is always a leaf node
+        raw_tools = tools or []
+        stripped = [t for t in raw_tools if t not in _ORCHESTRATION_TOOLS]
+        if len(stripped) != len(raw_tools):
+            removed = [t for t in raw_tools if t in _ORCHESTRATION_TOOLS]
+            logger.warning(
+                f"DynamicAgent '{name}': removed orchestration tools {removed} "
+                f"(leaf agents cannot delegate)"
+            )
+        self.tools = stripped
         self.max_iterations = max_iterations
         self.source_path = source_path  # path to the originating YAML file
 
     def get_system_prompt(self, available_agents: list[dict] = None) -> str:
+        # available_agents is intentionally ignored: DynamicAgent is a leaf node
+        # and does not have access to subagent delegation.
         return self._system_prompt
 
     def __repr__(self) -> str:
@@ -49,7 +68,15 @@ class DynamicAgent(BaseAgent):
 
     @classmethod
     def from_dict(cls, data: dict, source_path: str = "") -> "DynamicAgent":
-        """Create a DynamicAgent from a parsed YAML dict."""
+        """Create a DynamicAgent from a parsed YAML dict.
+
+        Expected keys:
+            name (str, required): unique agent identifier
+            description / role (str): one-line role description
+            system_prompt (str): full system prompt text
+            tools (list[str]): allowed tool names (orchestration tools are stripped)
+            max_iterations (int): iteration budget (default 30)
+        """
         name = data.get("name", "").strip()
         if not name:
             raise ValueError(f"Agent YAML missing 'name' field: {source_path}")

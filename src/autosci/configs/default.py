@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "llm": {
         "provider": "anthropic",        # anthropic | openai
-        "model": "claude-opus-4-5",     # change to your preferred model
+        "model": "claude-opus-4-6",     # change to your preferred model
         "api_key_env": "ANTHROPIC_API_KEY",
         "base_url": None,               # None = provider default; set for openai-compatible endpoints
         "max_tokens": 8192,
@@ -36,8 +36,8 @@ DEFAULT_CONFIG = {
     },
     "scientist": {
         "workspace": None,            # set by `autosci scientist --workspace`
-        "enable_trajectory": False,   # enabled automatically in scientist mode
-        "enable_understanding": False, # enabled automatically in scientist mode
+        "enable_trajectory": True,    # trajectory recording in scientist mode
+        "enable_understanding": True, # task understanding pipeline in scientist mode
     },
 }
 

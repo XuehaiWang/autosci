@@ -27,5 +27,4 @@ tools:
   - list_dir
   - glob
   - grep
-  - execute_command
 max_iterations: 30

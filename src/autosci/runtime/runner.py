@@ -575,7 +575,7 @@ class AgentRunner:
         )
 
         # Optionally persist the agent YAML to the workspace/agents/ directory
-        workspace = self.config.get("task", {}).get("workspace", "")
+        workspace = self.config.get("scientist", {}).get("workspace", "")
         if workspace:
             self._save_agent_yaml(agent, workspace)
 
@@ -637,7 +637,7 @@ class AgentRunner:
         if new_status not in valid_statuses:
             return f"Error: status must be one of {sorted(valid_statuses)}"
 
-        workspace = context.workspace or self.config.get("task", {}).get("workspace", "")
+        workspace = context.workspace or self.config.get("scientist", {}).get("workspace", "")
         if not workspace:
             return "Error: update_claim requires a task workspace (not available in assistant mode)"
 

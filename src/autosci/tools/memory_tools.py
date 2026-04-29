@@ -1,18 +1,21 @@
 """Memory tools — store and recall memories during agent execution."""
 
-import json
+import threading
 
 from autosci.tools.registry import registry
 
-# The actual MemoryManager instance is set by the runner at startup.
-# Tools call it via this module-level reference.
-_manager = None
+# Thread-local storage so each child runner (thread) has its own MemoryManager
+# reference without interfering with the parent or sibling runners.
+_local = threading.local()
 
 
 def set_memory_manager(manager) -> None:
-    """Called by the runner to inject the MemoryManager instance."""
-    global _manager
-    _manager = manager
+    """Called by the runner to inject the MemoryManager instance for this thread."""
+    _local.manager = manager
+
+
+def _get_manager():
+    return getattr(_local, "manager", None)
 
 
 # === Store Memory ===
@@ -62,6 +65,7 @@ def store_memory(
     tags: list[str] = None,
     summary: str = None,
 ) -> str:
+    _manager = _get_manager()
     if _manager is None:
         return "Error: memory system not initialized"
     try:
@@ -110,6 +114,7 @@ RECALL_MEMORY_SCHEMA = {
 
 
 def recall_memory(query: str, memory_type: str = None, limit: int = 5) -> str:
+    _manager = _get_manager()
     if _manager is None:
         return "Error: memory system not initialized"
     try:

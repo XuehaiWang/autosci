@@ -322,13 +322,21 @@ def save_task_understanding_report(plan: TaskPlan, workspace: str) -> str:
 
 
 def load_task_plan(workspace: str) -> Optional[TaskPlan]:
-    """Load task plan from {workspace}/task_plan.json."""
-    path = os.path.join(workspace, "task_plan.json")
-    if not os.path.exists(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return TaskPlan.from_dict(json.load(f))
-    except Exception as e:
-        logger.warning(f"Failed to load task plan: {e}")
-        return None
+    """Load task plan from workspace.
+
+    Searches in order:
+    1. {workspace}/.autosci/task_plan.json  (project-level .autosci/ layout)
+    2. {workspace}/task_plan.json           (legacy / flat layout)
+    """
+    candidates = [
+        os.path.join(workspace, ".autosci", "task_plan.json"),
+        os.path.join(workspace, "task_plan.json"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return TaskPlan.from_dict(json.load(f))
+            except Exception as e:
+                logger.warning(f"Failed to load task plan from {path}: {e}")
+    return None
