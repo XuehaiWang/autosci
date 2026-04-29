@@ -114,9 +114,11 @@ class MemoryManager:
         else:
             mode_instruction = (
                 "Focus especially on:\n"
-                "- Key research findings and experimental results\n"
-                "- Effective workflows and methodologies discovered\n"
-                "- Surprising or non-obvious insights worth remembering\n"
+                "- Reusable workflows and methodologies that worked well (type: procedural)\n"
+                "- Environment/library quirks discovered (e.g. 'cvxpy fails here, use scipy') (type: procedural)\n"
+                "- General domain knowledge that applies beyond this specific task (type: semantic)\n"
+                "- Do NOT save task-specific numbers (exact metric values, dataset statistics) — "
+                "those are in the trajectory, not worth keeping as memories\n"
             )
 
         prompt = (
@@ -193,10 +195,14 @@ class MemoryManager:
 
                 text_lower = result_text.lower()
 
-                # Only save genuine errors, skip warnings/deprecations
-                is_error = any(kw in text_lower for kw in ["error:", "exception:", "traceback"])
-                is_warning = any(kw in text_lower for kw in ["warning:", "deprecat", "userwarning"])
-                if not is_error or is_warning:
+                # Only save genuine errors — must have traceback or explicit Error/Exception
+                is_genuine_error = any(kw in text_lower for kw in ["traceback (most recent", "exception:", "error:"])
+                # Skip anything that is primarily a warning (even if it mentions "error" in passing)
+                is_warning = any(kw in text_lower for kw in [
+                    "warning:", "deprecat", "userwarning", "convergencewarning",
+                    "futurewarning", "runtimewarning", "warnings.warn",
+                ])
+                if not is_genuine_error or is_warning:
                     continue
 
                 # Deduplicate by first 80 chars of error

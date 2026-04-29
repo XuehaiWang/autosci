@@ -142,14 +142,21 @@ class FileMemoryProvider(MemoryProvider):
             return ""
 
         if task:
-            memories = self.retrieve(task, limit=10)
+            # Only retrieve semantic and procedural — episodic is task-specific noise
+            memories = (
+                self.retrieve(task, memory_type="semantic", limit=5)
+                + self.retrieve(task, memory_type="procedural", limit=5)
+            )
+            # Re-sort by relevance score
+            memories.sort(key=lambda m: m.relevance_score, reverse=True)
+            memories = memories[:8]
         else:
-            # Get most recent memories
+            # No task context: show recent semantic + procedural only
             all_mems = sorted(
-                self._index.values(),
+                [m for m in self._index.values() if m["type"] in ("semantic", "procedural")],
                 key=lambda m: m.get("updated", ""),
                 reverse=True,
-            )[:10]
+            )[:8]
             memories = [
                 MemoryEntry(
                     id=m["id"], type=m["type"], tags=m.get("tags", []),
@@ -165,23 +172,22 @@ class FileMemoryProvider(MemoryProvider):
         lines = []
 
         # Group by type
-        by_type = {"episodic": [], "semantic": [], "procedural": []}
+        by_type: dict[str, list] = {"semantic": [], "procedural": []}
         for mem in memories:
             by_type.get(mem.type, []).append(mem)
 
-        if by_type["episodic"] or by_type["semantic"]:
-            lines.append("### Past experience & knowledge:")
-            for mem in by_type["episodic"] + by_type["semantic"]:
-                date = mem.created[:10] if mem.created else ""
-                lines.append(f"- [{mem.type}] {mem.summary} ({date})")
+        if by_type["semantic"]:
+            lines.append("### Relevant knowledge:")
+            for mem in by_type["semantic"]:
+                lines.append(f"- {mem.summary}")
 
         if by_type["procedural"]:
-            lines.append("\n### Learned procedures:")
+            lines.append("\n### Learned workflows:")
             for mem in by_type["procedural"]:
                 lines.append(f"- {mem.summary}")
 
         lines.append(
-            f"\n({len(memories)} memories shown. Use `recall_memory` tool for more.)"
+            f"\n(Use `recall_memory` tool to search episodic memories or get more detail.)"
         )
 
         return "\n".join(lines)

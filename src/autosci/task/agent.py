@@ -114,48 +114,64 @@ instead write "reduce perplexity by >5% on WikiText-103 benchmark compared to ba
 
 
 _TASK_GIVEN_PROMPT = """
-# Task Understanding Agent (Task Analysis Mode)
+# Task Understanding Agent (Paper Reproduction Mode)
 
-You have been given a concrete research task description. Your job is to deeply
-understand it and produce structured, actionable research questions and claims.
+You have been given a concrete research task. This is a **paper reproduction task**:
+the goal is to implement the described method, run experiments on the provided data,
+and produce specific quantitative results and figures that match the paper's findings.
 
-## Step 1: Context Parsing
+Your job is to extract concrete, actionable reproduction targets as Claims.
 
-Extract from the task description:
-- **research_subject**: What object/phenomenon is being studied?
-- **data_type**: What data, materials, or experimental inputs are involved?
-- **task_goal**: What is the ultimate objective (what will be produced/proved)?
-- **known_methods**: What existing methods/baselines are mentioned or implied?
-- **key_terms**: 5-8 specific technical terms to use for literature search
+## Step 1: Parse Task Description
 
-## Step 2: Key Point Extraction
+Read the task description carefully. Extract:
+- **research_subject**: What method/paper is being reproduced?
+- **data_type**: What input data is provided?
+- **task_goal**: What specific outputs must be produced (metrics, figures, tables)?
+- **known_methods**: What methods/baselines are mentioned?
+- **key_terms**: 5-8 technical terms that identify the core algorithm
 
-From the task description, identify 3-5 specific points that are *underspecified*
-or *assumed* — these become the "what exactly is X?" questions that drive RQ generation.
-Examples:
-- "a new Bayesian framework" → What exactly is the framework structure?
-- "significantly improves" → Improves by how much, on what metric?
-- "outperforms baselines" → Which baselines, under what conditions?
+## Step 2: Inventory Workspace
 
-## Step 3: Literature Search
+Use `list_dir` to explore the workspace structure:
+- List `data/` — understand available input files and formats
+- List `related_work/` — find local PDF papers to read
+- List `images/` if it exists — understand expected output figure paths
 
-Using the key_terms, search for 8-15 relevant papers with `web_search`.
-For each paper in the results, fetch the abstract/intro with `web_fetch` if needed.
-For each paper, extract:
-- contribution (1-2 sentences)
-- evidence (what validates the contribution)
-- boundary/gap (what it does NOT do, or future work mentioned)
+## Step 3: Read Local Papers
 
-Focus on papers directly related to the task's method and domain.
+For each PDF in `related_work/`, use `read_file` to read its content.
+From each paper, extract:
+- The core method/algorithm (contribution)
+- **Exact quantitative results**: accuracy, RMSE, F1, AUC, correlation, etc. with precise values
+- **Figures produced**: what visualizations are shown, what they demonstrate
+- What baselines are compared against and by how much the method outperforms them
+- The experimental setup: dataset, evaluation protocol, metrics
 
-## Step 4: Synthesis → Research Questions + Claims
+Do NOT use `web_search` — all relevant papers are already in `related_work/`.
 
-Combine Context (Step 1-2) with Literature Gaps (Step 3):
-- Each RQ should be derived from: a key underspecified point + a gap in related work
-- Each Claim should be a concrete, falsifiable hypothesis
-  - Type: "comparative" (A beats B), "existence" (X is achievable),
-          "improvement" (method reduces metric by amount), "causal" (X causes Y)
-  - verifiable_by: the specific experiment, dataset, or measurement
+## Step 4: Extract Reproduction Targets → Claims
+
+Based on Steps 1-3, identify ALL specific outputs the task requires.
+Each Claim is one concrete reproduction target:
+
+**For quantitative results** (metrics to report in text):
+- statement: "Reproduce [method] achieving [metric]=[value] on [dataset/condition]"
+- type: "existence"
+- verifiable_by: "Run [specific experiment]; report must contain [metric]=[value]"
+
+**For figure outputs** (plots/visualizations to generate):
+- statement: "Generate [figure description] and save to images/[filename].png"
+- type: "existence"
+- verifiable_by: "File images/[filename].png exists showing [visual description]"
+
+**For comparative results** (method vs baseline):
+- statement: "[Method] outperforms [baseline] by [delta] on [metric] under [condition]"
+- type: "comparative"
+- verifiable_by: "Run both methods; compare [metric] values"
+
+Aim for 4-8 Claims that together cover all the key results the task asks for.
+Every Claim must be specific enough that a reviewer can check it against the output.
 
 ## Step 5: Output
 
@@ -168,7 +184,7 @@ Write `task_plan.json` with structured JSON using `write_file`.
 {
   "raw_task": "<original task>",
   "mode": "task_given",
-  "goal": "<one sentence core objective>",
+  "goal": "<one sentence: reproduce [method] on [data] producing [key outputs]>",
   "context": {
     "research_subject": "...",
     "data_type": "...",
@@ -178,9 +194,9 @@ Write `task_plan.json` with structured JSON using `write_file`.
   },
   "related_works": [
     {
-      "title": "...", "source": "...",
-      "contribution": "...", "evidence": "...", "boundary": "...",
-      "year": "...", "authors": "..."
+      "title": "...", "source": "<path to local PDF>",
+      "contribution": "...", "evidence": "<exact numbers from paper>",
+      "boundary": "...", "year": "...", "authors": "..."
     }
   ],
   "research_questions": [
@@ -188,21 +204,26 @@ Write `task_plan.json` with structured JSON using `write_file`.
   ],
   "claims": [
     {
-      "id": "C1", "statement": "...", "type": "comparative",
-      "verifiable_by": "...", "related_rq_id": "RQ1", "status": "unverified"
+      "id": "C1",
+      "statement": "Reproduce [method] achieving [metric]=[value] on [dataset]",
+      "type": "existence",
+      "verifiable_by": "Run experiment; output report contains [metric]=[value]",
+      "related_rq_id": "RQ1",
+      "status": "unverified"
     }
   ],
-  "suggested_agents": ["research", "code", "analysis", "write"]
+  "suggested_agents": ["code", "analysis", "write"]
 }
 ```
 
-Be concrete and specific. Vague claims are useless. Every claim must name a
-specific metric, dataset, or measurable outcome.
+Be concrete and specific. Every Claim must name exact metrics, values, and/or output
+file paths. Vague claims like "demonstrate the method works" are useless.
 
 ## Output Format for task_understanding.md
 
-Use the structured Markdown format with sections:
-Context Parsing, Key Points, Related Work, Research Questions, Claims.
+Use structured Markdown with sections:
+Context Parsing, Workspace Inventory, Related Work (with exact results extracted),
+Research Questions, Claims (as a table).
 """
 
 

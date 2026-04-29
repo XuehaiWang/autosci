@@ -33,6 +33,20 @@ _METHOD_KEYWORDS = [
 ]
 
 
+def _build_workspace_inventory(workspace: str) -> str:
+    """Build a concise inventory of workspace files for the agent's initial context."""
+    lines = []
+    for subdir in ("data", "related_work", "images"):
+        path = os.path.join(workspace, subdir)
+        if os.path.isdir(path):
+            files = sorted(os.listdir(path))
+            if files:
+                lines.append(f"{subdir}/: {', '.join(files)}")
+            else:
+                lines.append(f"{subdir}/: (empty)")
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 def detect_mode(task: str) -> str:
     """Heuristically determine whether a task is topic_only or task_given."""
     task_lower = task.lower().strip()
@@ -72,12 +86,16 @@ class TaskUnderstanding:
 
         agent = TaskUnderstandingAgent(mode=mode)
 
-        # Build the task message — include workspace path so agent knows where to write
+        # Build the task message — include workspace path and inventory so agent
+        # starts with context instead of wasting iterations on discovery
+        inventory = _build_workspace_inventory(self.workspace)
         agent_task = (
             f"{task}\n\n"
             f"---\n"
-            f"Write your output files to: {self.workspace}\n"
-            f"Required output files:\n"
+            f"## Workspace\n"
+            f"Root: {self.workspace}\n"
+            f"{inventory}"
+            f"\n## Required Output Files\n"
             f"  1. {os.path.join(self.workspace, 'task_understanding.md')} — full Markdown report\n"
             f"  2. {os.path.join(self.workspace, 'task_plan.json')} — structured JSON\n"
         )
