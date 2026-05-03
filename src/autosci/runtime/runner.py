@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
-from autosci.context.compressor import SummarizationCompressor
+from autosci.context.compressor import SummarizationCompressor, _estimate_message_tokens
 from autosci.context.engine import ContextEngine
 from autosci.memory.file_provider import FileMemoryProvider
 from autosci.memory.manager import MemoryManager
@@ -304,8 +304,14 @@ class AgentRunner:
 
                 if tc.name in self._RUNNER_TOOLS:
                     result_str = self._handle_agent_tool(tc.name, tc.arguments, context)
+                    from autosci.tools.registry import _detect_error, _truncate_output
+                    is_error = _detect_error(result_str)
+                    result_str = _truncate_output(result_str)
                 else:
-                    result_str = tool_registry.dispatch(tc.name, tc.arguments)
+                    from autosci.tools.registry import ToolResult as _ToolResult
+                    tool_result: _ToolResult = tool_registry.dispatch(tc.name, tc.arguments)
+                    result_str = tool_result.content
+                    is_error = tool_result.is_error
 
                 # Record tool end in trajectory
                 if self.trajectory and span_id:
@@ -313,24 +319,28 @@ class AgentRunner:
                         span_id, tc.id, tc.name, tc.arguments, result_str,
                     )
 
-                tool_results.append({
+                block = {
                     "type": "tool_result",
                     "tool_use_id": tc.id,
                     "content": result_str,
-                })
+                }
+                if is_error:
+                    block["is_error"] = True
+                tool_results.append(block)
 
             messages.append({"role": "user", "content": tool_results})
             self.session_store.append_message(session_id, "user", tool_results)
 
-            # Check if context compression is needed
-            current_tokens = total_usage.prompt_tokens
+            # Check if context compression is needed.
+            # Use the current-round prompt tokens (from LLM response) as a proxy for
+            # context size — more accurate than accumulating all response tokens.
+            current_tokens = response.usage.prompt_tokens if response.usage else total_usage.prompt_tokens
             if self.context_engine.should_compress(current_tokens):
                 logger.info("Context compression triggered")
                 before_tokens = current_tokens
                 self.memory_manager.on_pre_compress(messages)
                 messages = self.context_engine.compress(messages)
-                # Estimate token count after compression (chars / 4 is a reasonable proxy)
-                after_tokens = sum(len(str(m)) for m in messages) // 4
+                after_tokens = sum(_estimate_message_tokens(m) for m in messages)
                 if self.trajectory and span_id:
                     self.trajectory.record_compression(span_id, before_tokens, after_tokens)
 

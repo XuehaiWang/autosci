@@ -1,15 +1,21 @@
 """Skill tools — list, view, and create reusable research procedure templates."""
 
+import threading
+
 from autosci.tools.registry import registry
 
-# The SkillEngine instance is set by the runner at startup.
-_engine = None
+# Thread-local storage so each child runner (thread) has its own SkillEngine
+# reference without interfering with the parent or sibling runners.
+_local = threading.local()
 
 
 def set_skill_engine(engine) -> None:
-    """Called by the runner to inject the SkillEngine instance."""
-    global _engine
-    _engine = engine
+    """Called by the runner to inject the SkillEngine instance for this thread."""
+    _local.engine = engine
+
+
+def _get_engine():
+    return getattr(_local, "engine", None)
 
 
 # === List Skills ===
@@ -30,6 +36,7 @@ LIST_SKILLS_SCHEMA = {
 
 
 def list_skills() -> str:
+    _engine = _get_engine()
     if _engine is None:
         return "Error: skill system not initialized"
     skills = _engine.list_all()
@@ -67,6 +74,7 @@ VIEW_SKILL_SCHEMA = {
 
 
 def view_skill(name: str) -> str:
+    _engine = _get_engine()
     if _engine is None:
         return "Error: skill system not initialized"
     skill = _engine.get(name)
@@ -120,6 +128,7 @@ CREATE_SKILL_SCHEMA = {
 
 
 def create_skill(name: str, description: str, tags: list[str], content: str) -> str:
+    _engine = _get_engine()
     if _engine is None:
         return "Error: skill system not initialized"
     try:

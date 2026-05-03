@@ -46,6 +46,59 @@ def _delegate_placeholder(**kwargs):
 registry.register("delegate", DELEGATE_SCHEMA, _delegate_placeholder, toolset="agent")
 
 
+# === Delegate Parallel ===
+
+DELEGATE_PARALLEL_SCHEMA = {
+    "name": "delegate_parallel",
+    "description": (
+        "Delegate multiple independent subtasks to specialized subagents that run "
+        "in parallel. All subagents start simultaneously and results are returned "
+        "together once all have finished. Use this when subtasks are independent "
+        "and can be executed concurrently (e.g., analysing different datasets, "
+        "running separate experiments, searching different topics at the same time). "
+        "Do NOT use for tasks that depend on each other's results."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "description": "List of independent subtasks to run in parallel (max 8)",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "Name of the subagent to delegate to",
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Clear description of the subtask",
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "Relevant context to pass to the subagent (optional)",
+                        },
+                    },
+                    "required": ["agent", "task"],
+                },
+                "minItems": 2,
+                "maxItems": 8,
+            },
+        },
+        "required": ["tasks"],
+    },
+}
+
+
+def _delegate_parallel_placeholder(**kwargs):
+    """Placeholder — actual execution is intercepted by AgentRunner."""
+    return "Error: delegate_parallel must be handled by the runner"
+
+
+registry.register("delegate_parallel", DELEGATE_PARALLEL_SCHEMA, _delegate_parallel_placeholder, toolset="agent")
+
+
 # === Ask User ===
 
 ASK_USER_SCHEMA = {

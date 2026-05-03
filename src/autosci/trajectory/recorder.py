@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from typing import Optional
@@ -21,7 +22,8 @@ def _now() -> str:
 class TrajectoryRecorder:
     """Records agent execution trajectory to a workspace directory.
 
-    Thread-safety: single-threaded use only (matches runner's sync model).
+    Thread-safe: protected by a single lock so parallel subagents can share
+    one recorder instance without corrupting spans or event files.
 
     Directory layout:
         {trajectory_dir}/
@@ -36,7 +38,8 @@ class TrajectoryRecorder:
         self._events_path = os.path.join(trajectory_dir, "events.jsonl")
         self._spans_path = os.path.join(trajectory_dir, "spans.json")
 
-        # In-memory state
+        # In-memory state (all protected by _lock)
+        self._lock = threading.Lock()
         self._spans: dict[str, AgentSpan] = {}          # span_id → AgentSpan
         self._span_stack: list[str] = []                 # active span stack (for timing)
         self._tool_start_times: dict[str, float] = {}   # tool call id → start time
@@ -62,12 +65,11 @@ class TrajectoryRecorder:
             system_prompt_digest=system_prompt[:500],
             memories_loaded=memories_loaded or [],
         )
-        self._spans[span_id] = span
-        self._span_stack.append(span_id)
-
-        # Link child to parent
-        if parent_span_id and parent_span_id in self._spans:
-            self._spans[parent_span_id].child_span_ids.append(span_id)
+        with self._lock:
+            self._spans[span_id] = span
+            self._span_stack.append(span_id)
+            if parent_span_id and parent_span_id in self._spans:
+                self._spans[parent_span_id].child_span_ids.append(span_id)
 
         self._write_event(TrajectoryEvent(
             event_type="agent_start",
@@ -90,30 +92,32 @@ class TrajectoryRecorder:
         memories_stored: list[str] = None,
     ) -> None:
         """Close an AgentSpan."""
-        span = self._spans.get(span_id)
-        if not span:
-            return
-
-        span.ended_at = _now()
-        span.status = status
-        span.output = output[:1000]   # cap output stored in span
-        span.prompt_tokens = prompt_tokens
-        span.completion_tokens = completion_tokens
-        span.total_tokens = total_tokens
-        span.memories_stored = memories_stored or []
-
-        if span_id in self._span_stack:
-            self._span_stack.remove(span_id)
+        with self._lock:
+            span = self._spans.get(span_id)
+            if not span:
+                return
+            span.ended_at = _now()
+            span.status = status
+            span.output = output[:1000]
+            span.prompt_tokens = prompt_tokens
+            span.completion_tokens = completion_tokens
+            span.total_tokens = total_tokens
+            span.memories_stored = memories_stored or []
+            if span_id in self._span_stack:
+                self._span_stack.remove(span_id)
+            agent_name = span.agent_name
+            tool_calls_count = span.tool_calls_count
+            ended_at = span.ended_at
 
         self._write_event(TrajectoryEvent(
             event_type="agent_end",
-            timestamp=span.ended_at,
+            timestamp=ended_at,
             span_id=span_id,
-            agent_name=span.agent_name,
+            agent_name=agent_name,
             data={
                 "status": status,
                 "total_tokens": total_tokens,
-                "tool_calls_count": span.tool_calls_count,
+                "tool_calls_count": tool_calls_count,
                 "output_preview": output[:200],
             },
         ))
@@ -123,12 +127,14 @@ class TrajectoryRecorder:
 
     def record_tool_start(self, span_id: str, call_id: str, tool_name: str, arguments: dict) -> None:
         """Record the start of a tool call (for timing)."""
-        self._tool_start_times[call_id] = time.time()
+        with self._lock:
+            self._tool_start_times[call_id] = time.time()
+            agent_name = self._spans[span_id].agent_name if span_id in self._spans else ""
         self._write_event(TrajectoryEvent(
             event_type="tool_call",
             timestamp=_now(),
             span_id=span_id,
-            agent_name=self._spans[span_id].agent_name if span_id in self._spans else "",
+            agent_name=agent_name,
             data={"tool_name": tool_name, "call_id": call_id, "arguments": _safe_args(arguments)},
         ))
 
@@ -141,9 +147,13 @@ class TrajectoryRecorder:
         result: str,
     ) -> None:
         """Record the completion of a tool call."""
-        duration_ms = int((time.time() - self._tool_start_times.pop(call_id, time.time())) * 1000)
-        result_summary = result[:300] if isinstance(result, str) else str(result)[:300]
+        with self._lock:
+            start_time = self._tool_start_times.pop(call_id, None)
+            duration_ms = int((time.time() - start_time) * 1000) if start_time is not None else 0
+            span = self._spans.get(span_id)
+            agent_name = span.agent_name if span else ""
 
+        result_summary = result[:300] if isinstance(result, str) else str(result)[:300]
         record = ToolCallRecord(
             tool_name=tool_name,
             arguments=_safe_args(arguments),
@@ -152,16 +162,16 @@ class TrajectoryRecorder:
             duration_ms=duration_ms,
         )
 
-        span = self._spans.get(span_id)
-        if span:
-            span.tool_calls.append(record)
-            span.tool_calls_count += 1
+        with self._lock:
+            if span:
+                span.tool_calls.append(record)
+                span.tool_calls_count += 1
 
         self._write_event(TrajectoryEvent(
             event_type="tool_result",
             timestamp=record.timestamp,
             span_id=span_id,
-            agent_name=span.agent_name if span else "",
+            agent_name=agent_name,
             data={
                 "tool_name": tool_name,
                 "call_id": call_id,
@@ -174,33 +184,39 @@ class TrajectoryRecorder:
     # ── Misc events ───────────────────────────────────────────────────────────
 
     def record_delegation(self, parent_span_id: str, child_agent: str, task: str) -> None:
-        parent = self._spans.get(parent_span_id)
+        with self._lock:
+            parent = self._spans.get(parent_span_id)
+            agent_name = parent.agent_name if parent else ""
         self._write_event(TrajectoryEvent(
             event_type="delegation",
             timestamp=_now(),
             span_id=parent_span_id,
-            agent_name=parent.agent_name if parent else "",
+            agent_name=agent_name,
             data={"child_agent": child_agent, "task": task[:200]},
         ))
 
     def record_compression(self, span_id: str, before_tokens: int, after_tokens: int) -> None:
-        span = self._spans.get(span_id)
+        with self._lock:
+            span = self._spans.get(span_id)
+            agent_name = span.agent_name if span else ""
         self._write_event(TrajectoryEvent(
             event_type="compression",
             timestamp=_now(),
             span_id=span_id,
-            agent_name=span.agent_name if span else "",
+            agent_name=agent_name,
             data={"before_tokens": before_tokens, "after_tokens": after_tokens,
                   "reduction": f"{(1 - after_tokens/max(before_tokens,1)):.0%}"},
         ))
 
     def record_memory_store(self, span_id: str, memory_type: str, summary: str) -> None:
-        span = self._spans.get(span_id)
+        with self._lock:
+            span = self._spans.get(span_id)
+            agent_name = span.agent_name if span else ""
         self._write_event(TrajectoryEvent(
             event_type="memory_store",
             timestamp=_now(),
             span_id=span_id,
-            agent_name=span.agent_name if span else "",
+            agent_name=agent_name,
             data={"memory_type": memory_type, "summary": summary[:120]},
         ))
 
@@ -208,13 +224,16 @@ class TrajectoryRecorder:
 
     @property
     def current_span_id(self) -> Optional[str]:
-        return self._span_stack[-1] if self._span_stack else None
+        with self._lock:
+            return self._span_stack[-1] if self._span_stack else None
 
     def get_span(self, span_id: str) -> Optional[AgentSpan]:
-        return self._spans.get(span_id)
+        with self._lock:
+            return self._spans.get(span_id)
 
     def all_spans(self) -> list[AgentSpan]:
-        return list(self._spans.values())
+        with self._lock:
+            return list(self._spans.values())
 
     # ── I/O ──────────────────────────────────────────────────────────────────
 
@@ -230,8 +249,9 @@ class TrajectoryRecorder:
             logger.warning(f"Trajectory event write failed: {e}")
 
     def _flush_spans(self) -> None:
-        try:
+        with self._lock:
             data = {sid: span.to_dict() for sid, span in self._spans.items()}
+        try:
             with open(self._spans_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except Exception as e:

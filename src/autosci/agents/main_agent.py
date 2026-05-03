@@ -57,6 +57,10 @@ class MainAgent(BaseAgent):
             "- **`read_file` / `write_file`**: read task files, write code and outputs",
             "- **`execute_command`**: run Python scripts, shell commands, experiments",
             "- **`delegate`**: hand off a specialized subtask to a subagent (see below)",
+            "- **`delegate_parallel`**: run multiple independent subtasks in parallel across "
+            "subagents simultaneously — use when subtasks don't depend on each other "
+            "(e.g., analysing different datasets, running separate experiments, "
+            "searching different topics at the same time)",
             "- **`create_agent`**: define and run a custom agent inline for novel subtasks",
             "- **`update_claim`**: mark a Claim as `supported`, `refuted`, or `partial` "
             "after obtaining experimental evidence — always call this when you have results",

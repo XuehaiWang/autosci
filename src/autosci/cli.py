@@ -20,7 +20,9 @@ import sys
 def _bootstrap():
     """Auto-register all built-in tools and agents."""
     import autosci.tools.file_tools       # noqa: F401
+    import autosci.tools.pdf_tools        # noqa: F401
     import autosci.tools.terminal_tool    # noqa: F401
+    import autosci.tools.terminal_tools   # noqa: F401
     import autosci.tools.agent_tools      # noqa: F401
     import autosci.tools.memory_tools     # noqa: F401
     import autosci.tools.skill_tools      # noqa: F401

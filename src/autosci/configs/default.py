@@ -9,11 +9,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG = {
     "llm": {
-        "provider": "anthropic",        # anthropic | openai
+        "provider": "anthropic",        # anthropic | openai | openai-responses | gemini
         "model": "claude-opus-4-6",     # change to your preferred model
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "base_url": None,               # None = provider default; set for openai-compatible endpoints
+        "api_key_env": "ANTHROPIC_API_KEY",  # override default env var for the provider
+        "base_url": None,               # None = provider default; set for custom endpoints
         "max_tokens": 8192,
+        # Provider examples:
+        #   provider: openai          → default: api.openai.com/v1/chat/completions
+        #   provider: openai-responses→ default: api.openai.com/v1/responses
+        #   provider: gemini          → default: generativelanguage.googleapis.com
+        #   provider: anthropic       → default: api.anthropic.com/v1/messages
+        # Custom endpoint example (vLLM, Ollama, etc.):
+        #   provider: openai
+        #   base_url: http://localhost:8000
+        #   api_key_env: MY_API_KEY
     },
     "runtime": {
         "max_iterations": 100,

@@ -2,9 +2,48 @@
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+# ── Framework-level output limits ─────────────────────────────────────────────
+
+MAX_TOOL_OUTPUT_CHARS = 50_000
+"""Hard cap on tool output returned to the LLM (per tool call)."""
+
+
+@dataclass
+class ToolResult:
+    """Structured tool execution result.
+
+    Attributes:
+        content: The tool output string.
+        is_error: True if the tool execution failed.
+    """
+    content: str
+    is_error: bool = False
+
+
+def _detect_error(output: str) -> bool:
+    """Heuristic: treat output as an error if it starts with 'Error:'."""
+    if not output:
+        return False
+    first_line = output.split("\n", 1)[0].strip()
+    return first_line.startswith("Error:")
+
+
+def _truncate_output(output: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:
+    """Truncate tool output, keeping head + tail with a truncation marker."""
+    if len(output) <= max_chars:
+        return output
+    half = max_chars // 2
+    omitted = len(output) - max_chars
+    return (
+        output[:half]
+        + f"\n\n... [output truncated: {omitted:,} chars omitted] ...\n\n"
+        + output[-half:]
+    )
 
 
 class ToolEntry:
@@ -79,18 +118,38 @@ class ToolRegistry:
             definitions.append(entry.schema)
         return definitions
 
-    def dispatch(self, name: str, args: dict) -> str:
-        """Execute a tool by name and return the result as a string."""
+    def dispatch(self, name: str, args: dict) -> ToolResult:
+        """Execute a tool by name and return a structured ToolResult.
+
+        Error detection:
+        - Exceptions during execution → is_error=True, wrapped in <tool_use_error>
+        - Unknown tool name → is_error=True
+        - Output starting with "Error:" → is_error=True (convention-based)
+
+        Output truncation:
+        - All outputs are capped at MAX_TOOL_OUTPUT_CHARS (head + tail preserved).
+        """
         if name not in self._tools:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return ToolResult(
+                content=f"<tool_use_error>Unknown tool: {name}</tool_use_error>",
+                is_error=True,
+            )
         try:
             result = self._tools[name].handler(**args)
-            if isinstance(result, str):
-                return result
-            return json.dumps(result, ensure_ascii=False)
+            if not isinstance(result, str):
+                result = json.dumps(result, ensure_ascii=False)
+            is_error = _detect_error(result)
+            return ToolResult(
+                content=_truncate_output(result),
+                is_error=is_error,
+            )
         except Exception as e:
             logger.exception(f"Tool '{name}' failed")
-            return json.dumps({"error": f"{type(e).__name__}: {str(e)}"})
+            error_msg = f"{type(e).__name__}: {e}"
+            return ToolResult(
+                content=f"<tool_use_error>{error_msg}</tool_use_error>",
+                is_error=True,
+            )
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools

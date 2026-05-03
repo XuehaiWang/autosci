@@ -51,7 +51,7 @@ def read_file(path: str, offset: int = 1, limit: int = 2000) -> str:
         header = f"[{path}] lines {start + 1}-{end} of {total}\n"
         return header + "".join(numbered)
     except Exception as e:
-        return f"Error reading {path}: {e}"
+        return f"Error: reading {path} failed: {e}"
 
 
 registry.register("read_file", READ_FILE_SCHEMA, read_file, toolset="file")
@@ -88,7 +88,7 @@ def write_file(path: str, content: str) -> str:
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return f"Written {line_count} lines to {path}"
     except Exception as e:
-        return f"Error writing {path}: {e}"
+        return f"Error: writing {path} failed: {e}"
 
 
 registry.register("write_file", WRITE_FILE_SCHEMA, write_file, toolset="file")
@@ -129,7 +129,7 @@ def list_dir(path: str = ".") -> str:
         header = f"[{path}] {len(entries)} entries:\n"
         return header + "\n".join(result)
     except Exception as e:
-        return f"Error listing {path}: {e}"
+        return f"Error: listing {path} failed: {e}"
 
 
 def _format_size(size: int) -> str:
@@ -220,7 +220,7 @@ def grep(pattern: str, path: str = ".", file_pattern: str = None, context: int =
     try:
         regex = re.compile(pattern)
     except re.error as e:
-        return f"Invalid regex: {e}"
+        return f"Error: invalid regex: {e}"
 
     # Collect files to search
     if os.path.isfile(path):
@@ -276,3 +276,136 @@ def grep(pattern: str, path: str = ".", file_pattern: str = None, context: int =
 
 
 registry.register("grep", GREP_SCHEMA, grep, toolset="file")
+
+
+# === Edit File (unified diff) ===
+
+EDIT_FILE_SCHEMA = {
+    "name": "edit_file",
+    "description": (
+        "Edit a local text file using a unified diff patch. "
+        "The patch must contain one or more hunks with @@ headers. "
+        "Context lines are used to locate the edit position precisely."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path to the file to edit",
+            },
+            "patch": {
+                "type": "string",
+                "description": (
+                    "A unified diff patch with one or more hunks. "
+                    "Each hunk starts with @@ -start,count +start,count @@ "
+                    "followed by lines prefixed with ' ' (context), '-' (remove), or '+' (add)."
+                ),
+            },
+        },
+        "required": ["path", "patch"],
+    },
+}
+
+
+def _parse_unified_patch(patch_text: str) -> list[dict]:
+    """Parse unified diff patch text into a list of hunks."""
+    lines = patch_text.splitlines()
+    hunks: list[dict] = []
+    current_hunk = None
+
+    for line in lines:
+        if line.startswith("--- ") or line.startswith("+++ "):
+            continue
+        if line.startswith("@@ "):
+            if current_hunk is not None:
+                hunks.append(current_hunk)
+            current_hunk = {"header": line, "lines": []}
+            continue
+        if current_hunk is None:
+            continue
+        if line.startswith((" ", "+", "-")):
+            current_hunk["lines"].append((line[:1], line[1:]))
+            continue
+        if line == r"\ No newline at end of file":
+            continue
+        raise ValueError(f"Unsupported patch line: {line!r}")
+
+    if current_hunk is not None:
+        hunks.append(current_hunk)
+
+    if not hunks:
+        raise ValueError("No hunks found in patch")
+    return hunks
+
+
+def _apply_hunks(original_text: str, hunks: list[dict]) -> tuple[str, int]:
+    """Apply parsed hunks to original text. Returns (updated_text, applied_count)."""
+    original_lines = original_text.splitlines()
+    ends_with_newline = original_text.endswith("\n")
+    output_lines: list[str] = []
+    cursor = 0
+
+    for hunk_index, hunk in enumerate(hunks, start=1):
+        old_block = []
+        new_block = []
+        for prefix, content in hunk["lines"]:
+            if prefix in (" ", "-"):
+                old_block.append(content)
+            if prefix in (" ", "+"):
+                new_block.append(content)
+
+        # Find old_block starting at cursor
+        start_pos = None
+        max_start = len(original_lines) - len(old_block)
+        for pos in range(cursor, max_start + 1):
+            if original_lines[pos : pos + len(old_block)] == old_block:
+                start_pos = pos
+                break
+
+        if start_pos is None:
+            preview = "\n".join(old_block[:5])
+            raise ValueError(f"Hunk #{hunk_index} context not found in file:\n{preview}")
+
+        output_lines.extend(original_lines[cursor:start_pos])
+        output_lines.extend(new_block)
+        cursor = start_pos + len(old_block)
+
+    output_lines.extend(original_lines[cursor:])
+    updated = "\n".join(output_lines)
+    if ends_with_newline:
+        updated += "\n"
+    return updated, len(hunks)
+
+
+def edit_file(path: str, patch: str) -> str:
+    path = os.path.expanduser(path)
+    if not os.path.isfile(path):
+        return f"Error: file not found: {path}"
+    if not patch.strip():
+        return "Error: patch must be a non-empty unified diff string"
+
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            original = f.read()
+    except OSError as e:
+        return f"Error: reading {path} failed: {e}"
+
+    try:
+        hunks = _parse_unified_patch(patch)
+        updated, applied = _apply_hunks(original, hunks)
+    except ValueError as e:
+        return f"Error: applying patch failed: {e}"
+
+    if updated == original:
+        return f"No changes applied to {path}"
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return f"Applied {applied} hunk(s) to {path}"
+    except OSError as e:
+        return f"Error: writing {path} failed: {e}"
+
+
+registry.register("edit_file", EDIT_FILE_SCHEMA, edit_file, toolset="file")

@@ -12,13 +12,8 @@ The runner copies task data into <WORKSPACE>, writes the task prompt to
   - <PROMPT> expanded to the instructions string (via shell $(cat ...))
   - <WORKSPACE> as the absolute workspace path
 
-This adapter:
-  1. Changes to the workspace directory.
-  2. Wraps the prompt with benchmark-specific instructions so the agent
-     knows it must write report/report.md.
-  3. Runs MainAgent in single-shot mode via AgentRunner.
-  4. Prints structured progress to stdout (captured as _agent_output.jsonl
-     by the harness).
+This adapter delegates entirely to ``run_scientist()`` — the same function
+used by ``autosci scientist`` — so bench and CLI share identical logic.
 """
 
 import argparse
@@ -67,27 +62,6 @@ def _emit(event: str, **kwargs):
     print(json.dumps(record, ensure_ascii=False), flush=True)
 
 
-# ─── CLI bootstrap (mirrors cli._bootstrap) ──────────────────────────────────
-
-def _bootstrap():
-    """Register all tools and agents (mirrors cli._bootstrap).
-
-    Must be kept in sync with cli._bootstrap. Any tool or YAML agent
-    discovery change there must be reflected here.
-    """
-    import autosci.tools.file_tools       # noqa: F401
-    import autosci.tools.terminal_tool    # noqa: F401
-    import autosci.tools.agent_tools      # noqa: F401
-    import autosci.tools.memory_tools     # noqa: F401
-    import autosci.tools.skill_tools      # noqa: F401
-    import autosci.tools.web_tools        # noqa: F401
-    import autosci.agents.main_agent      # noqa: F401
-    import autosci.agents.assistant_agent # noqa: F401
-    import autosci.task.agent             # noqa: F401
-    from autosci.agents.registry import agent_registry
-    agent_registry.discover_yaml()
-
-
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -131,107 +105,60 @@ def main():
         stream=sys.stderr,  # keep stderr separate from the captured stdout
     )
 
-    # ── Change to workspace directory ──────────────────────────────────────
-    workspace = args.workspace or os.getcwd()
-    workspace = os.path.abspath(workspace)
+    # ── Validate workspace ─────────────────────────────────────────────────
+    workspace = os.path.abspath(args.workspace or os.getcwd())
     if not os.path.isdir(workspace):
         _emit("error", message=f"Workspace directory not found: {workspace}")
         sys.exit(1)
-
-    os.chdir(workspace)
-
-    # Create .autosci/ internal dirs (mirrors _init_scientist_workspace in cli.py)
-    autosci_dir = os.path.join(workspace, ".autosci")
-    for sub in ["trajectory", "memory/episodic", "memory/semantic", "memory/procedural", "sessions"]:
-        os.makedirs(os.path.join(autosci_dir, sub), exist_ok=True)
-
-    # Ensure required output directories exist
-    os.makedirs(os.path.join(workspace, "report", "images"), exist_ok=True)
-    os.makedirs(os.path.join(workspace, "code"), exist_ok=True)
-    os.makedirs(os.path.join(workspace, "outputs"), exist_ok=True)
 
     # ── Build task prompt ──────────────────────────────────────────────────
     task = args.message.strip() + _BENCH_ADDENDUM
 
     _emit("start", agent="autosci", workspace=workspace)
 
-    # ── Load config ────────────────────────────────────────────────────────
-    from autosci.configs.default import load_config
-    overrides = {}
-    if args.model:
-        overrides = {"llm": {"model": args.model}}
-    config = load_config(overrides)
+    # ── on_event callback: forward progress to stdout as JSONL ────────────
+    def on_event(event: str, data: dict):
+        if event == "task_plan":
+            _emit("task_understanding", status="done",
+                  goal=data.get("goal", ""),
+                  claims=data.get("claims", 0),
+                  rqs=data.get("rqs", 0))
+        elif event == "agent_start":
+            _emit("agent_info",
+                  model=data.get("model", ""),
+                  max_iterations=data.get("max_iterations"))
+        elif event == "agent_done":
+            pass  # emitted after run_scientist returns
+        elif event == "trajectory":
+            _emit("trajectory", path=data.get("path", ""))
 
-    # Point storage and memory into .autosci/ (mirrors _build_scientist_config)
-    config["storage"]["db_path"] = os.path.join(autosci_dir, "sessions.db")
-    config["storage"]["export_dir"] = os.path.join(autosci_dir, "sessions")
-    config["memory"]["base_dir"] = os.path.join(autosci_dir, "memory")
+    # ── Delegate to run_scientist() ────────────────────────────────────────
+    from autosci.scientist import run_scientist
 
-    # ── Bootstrap tools and agents ─────────────────────────────────────────
-    _bootstrap()
-
-    # ── Create agent and runner ────────────────────────────────────────────
-    from autosci.agents.main_agent import MainAgent
-    from autosci.runtime.runner import AgentRunner
-    from autosci.trajectory.recorder import TrajectoryRecorder
-    from autosci.task.understanding import TaskUnderstanding
-    from autosci.task.schemas import save_task_plan
-
-    # Trajectory recorder — writes to .autosci/trajectory/
-    traj_dir = os.path.join(autosci_dir, "trajectory")
-    recorder = TrajectoryRecorder(traj_dir)
-
-    runner = AgentRunner(config, trajectory_recorder=recorder)
-
-    _emit(
-        "agent_info",
-        model=config["llm"]["model"],
-        provider=config["llm"]["provider"],
-        max_iterations=MainAgent.max_iterations,
+    result = run_scientist(
+        task=task,
+        workspace=workspace,
+        model=args.model,
+        max_iterations=args.max_iterations,
+        on_event=on_event,
     )
 
-    # ── Task understanding (mirrors cli._run_scientist) ────────────────────
-    _emit("task_understanding", status="start")
-    understanding = TaskUnderstanding(runner, workspace)
-    task_plan = understanding.analyze(args.message.strip())
-    save_task_plan(task_plan, autosci_dir)
-    _emit("task_understanding", status="done",
-          goal=task_plan.goal,
-          claims=len(task_plan.claims),
-          rqs=len(task_plan.research_questions))
-
-    # Inject task plan into the prompt (same as cli._run_scientist)
-    full_task = task + "\n\n" + task_plan.to_prompt_block()
-
-    # ── Run main agent ─────────────────────────────────────────────────────
-    agent = MainAgent()
-    if args.max_iterations:
-        agent.max_iterations = args.max_iterations
-
-    result = runner.run(agent, full_task)
-
-    # Export trajectory report to .autosci/trajectory/
-    traj_report = runner.export_trajectory(
-        task=args.message.strip(),
-        task_plan=task_plan.to_dict(),
-    )
-    if traj_report:
-        _emit("trajectory", path=traj_report)
-
-    _emit(
-        "usage",
-        prompt_tokens=result.token_usage.prompt_tokens,
-        completion_tokens=result.token_usage.completion_tokens,
-        total_tokens=result.token_usage.total_tokens,
-        tool_calls=result.tool_calls_count,
-    )
+    # ── Emit final stats ───────────────────────────────────────────────────
+    if result.token_usage:
+        _emit(
+            "usage",
+            prompt_tokens=result.token_usage.prompt_tokens,
+            completion_tokens=result.token_usage.completion_tokens,
+            total_tokens=result.token_usage.total_tokens,
+            tool_calls=result.tool_calls_count,
+        )
 
     _emit("done", status=result.status)
 
     # ── Ensure report exists ───────────────────────────────────────────────
     report_path = os.path.join(workspace, "report", "report.md")
     if not os.path.exists(report_path):
-        # Write agent's final response as a fallback report
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
         with open(report_path, "w", encoding="utf-8") as f:
             f.write("# Research Report\n\n")
             f.write(result.response)

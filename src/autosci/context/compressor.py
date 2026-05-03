@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~4 chars per token for English, ~2 for CJK."""
-    return max(1, len(text) // 3)
+    """Rough token estimate: ~4 chars per token for English."""
+    return max(1, len(text) // 4)
 
 
 def _estimate_message_tokens(msg: dict) -> int:

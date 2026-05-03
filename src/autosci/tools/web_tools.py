@@ -146,7 +146,7 @@ def web_fetch(url: str, max_chars: int = 20000) -> str:
         return f"[{url}] Unsupported content type: {content_type}"
 
     except Exception as e:
-        return f"Fetch error for {url}: {e}"
+        return f"Error: fetch failed for {url}: {e}"
 
 
 def _extract_text_from_html(html: str) -> str:

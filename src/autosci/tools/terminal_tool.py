@@ -77,7 +77,7 @@ def execute_command(command: str, timeout: int = 120, working_dir: str = None) -
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {timeout} seconds"
     except Exception as e:
-        return f"Error executing command: {e}"
+        return f"Error: command execution failed: {e}"
 
 
 registry.register("execute_command", EXECUTE_COMMAND_SCHEMA, execute_command, toolset="terminal")

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from typing import Optional
 
 from autosci.memory.provider import MemoryEntry, MemoryProvider
@@ -22,20 +23,24 @@ class MemoryManager:
         self.llm_client = llm_client
         self.trajectory = trajectory
         self._session_stack: list[tuple[str, str]] = []  # stack of (session_id, task)
+        self._lock = threading.Lock()  # protects _session_stack for parallel subagents
 
     @property
     def _current_session_id(self) -> Optional[str]:
-        return self._session_stack[-1][0] if self._session_stack else None
+        with self._lock:
+            return self._session_stack[-1][0] if self._session_stack else None
 
     @property
     def _current_task(self) -> Optional[str]:
-        return self._session_stack[-1][1] if self._session_stack else None
+        with self._lock:
+            return self._session_stack[-1][1] if self._session_stack else None
 
     # === Lifecycle hooks (called by the runner) ===
 
     def on_session_start(self, session_id: str, task: str) -> None:
         """Called at the beginning of an agent run. Supports nested delegation."""
-        self._session_stack.append((session_id, task))
+        with self._lock:
+            self._session_stack.append((session_id, task))
         self.provider.on_session_start(session_id, task)
 
     def on_session_end(self, session_id: str, messages: list[dict], status: str,
@@ -52,8 +57,9 @@ class MemoryManager:
         if status == "completed" and self.llm_client:
             stored_summaries = self._reflect_on_session(session_id, messages, mode=mode)
         self.provider.on_session_end(session_id, messages)
-        if self._session_stack and self._session_stack[-1][0] == session_id:
-            self._session_stack.pop()
+        with self._lock:
+            if self._session_stack and self._session_stack[-1][0] == session_id:
+                self._session_stack.pop()
         return stored_summaries
 
     def on_pre_compress(self, messages_to_compress: list[dict]) -> None:
