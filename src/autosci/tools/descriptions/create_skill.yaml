@@ -1,0 +1,26 @@
+name: create_skill
+description: Create a new reusable research skill from an effective procedure you've learned during this session. Skills persist
+  across sessions and are suggested when relevant tasks come up.
+toolset: skill
+input_schema:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Short identifier for the skill (e.g., 'ablation_study')
+    description:
+      type: string
+      description: One-line description of what the skill does
+    tags:
+      type: array
+      items:
+        type: string
+      description: Keywords for matching (e.g., ['experiment', 'ablation', 'comparison'])
+    content:
+      type: string
+      description: Full procedure in Markdown format (steps, tips, checklists)
+  required:
+  - name
+  - description
+  - tags
+  - content

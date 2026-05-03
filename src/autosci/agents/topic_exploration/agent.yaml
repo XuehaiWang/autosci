@@ -1,0 +1,12 @@
+name: topic_exploration
+description: "Broad topic exploration: literature search, idea generation, RQ and claim synthesis"
+tools:
+  - web_search
+  - web_fetch
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+max_iterations: 40
+prompt: prompt.md

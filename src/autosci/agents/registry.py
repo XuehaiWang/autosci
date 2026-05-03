@@ -72,28 +72,46 @@ class AgentRegistry:
     def discover_yaml(self, extra_dirs: list[str] = None) -> int:
         """Load all YAML agent definitions and register them as DynamicAgents.
 
-        Loading order (later entries can override earlier ones by name):
-        1. Built-in templates: src/autosci/agents/templates/*.yaml
-        2. User dir:           ~/.autosci/agents/*.yaml
-        3. extra_dirs          (caller-supplied paths, if any)
+        Supports two layouts:
+        1. Directory-based: <dir>/<name>/agent.yaml (+ prompt.md)
+        2. Flat file:       <dir>/<name>.yaml
 
-        Args:
-            extra_dirs: additional directories to scan beyond the defaults.
+        Loading order (later entries can override earlier ones by name):
+        1. Built-in agents:  src/autosci/agents/*/agent.yaml
+        2. Legacy templates: src/autosci/agents/templates/*.yaml
+        3. User dir:         ~/.autosci/agents/*/agent.yaml + ~/.autosci/agents/*.yaml
+        4. extra_dirs        (caller-supplied paths, if any)
 
         Returns:
             Number of agents successfully loaded.
         """
         from autosci.agents.dynamic_agent import load_agent_yaml
 
-        builtin_templates = Path(__file__).parent / "templates"
-        dirs = [str(builtin_templates), "~/.autosci/agents/"] + (extra_dirs or [])
+        agents_dir = Path(__file__).parent
+        builtin_templates = agents_dir / "templates"
+        dirs = [str(agents_dir), str(builtin_templates), "~/.autosci/agents/"] + (extra_dirs or [])
 
         loaded = 0
         for dir_path in dirs:
             expanded = Path(dir_path).expanduser()
             if not expanded.is_dir():
                 continue
+
+            # Scan subdirectories for agent.yaml (directory-based format)
+            for sub in sorted(expanded.iterdir()):
+                if sub.is_dir():
+                    agent_yaml = sub / "agent.yaml"
+                    if agent_yaml.is_file():
+                        agent = load_agent_yaml(str(agent_yaml))
+                        if agent:
+                            self.register_instance(agent)
+                            loaded += 1
+
+            # Scan flat YAML files (legacy format)
             for yaml_file in sorted(expanded.glob("*.yaml")) + sorted(expanded.glob("*.yml")):
+                # Skip if this is an agent.yaml inside a subdir (already handled)
+                if yaml_file.name == "agent.yaml":
+                    continue
                 agent = load_agent_yaml(str(yaml_file))
                 if agent:
                     self.register_instance(agent)

@@ -1,0 +1,15 @@
+name: web_search
+description: Search the web for information. Returns a list of results with titles, URLs, and snippets. Use this for literature
+  search, finding documentation, or researching topics.
+toolset: web
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+      description: Search query
+    max_results:
+      type: integer
+      description: 'Maximum number of results to return. Default: 10'
+  required:
+  - query

@@ -1,0 +1,11 @@
+name: terminal_kill
+description: Terminate and clean up a terminal session. The session_id becomes invalid after this call.
+toolset: terminal
+input_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: Session ID returned by terminal_start
+  required:
+  - session_id

@@ -1,0 +1,17 @@
+name: edit_file
+description: Edit a local text file using a unified diff patch. The patch must contain one or more hunks with @@ headers.
+  Context lines are used to locate the edit position precisely.
+toolset: file
+input_schema:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Path to the file to edit
+    patch:
+      type: string
+      description: A unified diff patch with one or more hunks. Each hunk starts with @@ -start,count +start,count @@ followed
+        by lines prefixed with ' ' (context), '-' (remove), or '+' (add).
+  required:
+  - path
+  - patch

@@ -1,0 +1,14 @@
+name: terminal_interrupt
+description: Send Ctrl-C (SIGINT) to a terminal session to interrupt the running command.
+toolset: terminal
+input_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: Session ID returned by terminal_start
+    max_output_chars:
+      type: integer
+      description: 'Maximum output characters to return. Default: 20000'
+  required:
+  - session_id

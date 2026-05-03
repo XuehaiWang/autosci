@@ -1,0 +1,13 @@
+name: analyst
+description: "Data analysis, statistical processing, and visualization"
+tools:
+  - web_search
+  - web_fetch
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+  - execute_command
+max_iterations: 35
+prompt: prompt.md

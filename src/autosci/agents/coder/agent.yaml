@@ -1,0 +1,11 @@
+name: coder
+description: "Code writing, debugging, and software implementation"
+tools:
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+  - execute_command
+max_iterations: 40
+prompt: prompt.md

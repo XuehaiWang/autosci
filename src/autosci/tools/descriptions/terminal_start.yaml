@@ -1,0 +1,21 @@
+name: terminal_start
+description: Start a persistent PTY terminal session. Returns a session_id for use with terminal_write, terminal_read, terminal_interrupt,
+  and terminal_kill. Use this instead of execute_command when you need an interactive shell, long-running processes (training
+  loops, servers), or stateful commands.
+toolset: terminal
+input_schema:
+  type: object
+  properties:
+    working_dir:
+      type: string
+      description: 'Working directory for the session. Default: current directory'
+    shell:
+      type: string
+      description: 'Shell executable. Default: bash'
+    rows:
+      type: integer
+      description: 'Terminal rows. Default: 30'
+    cols:
+      type: integer
+      description: 'Terminal columns. Default: 120'
+  required: []

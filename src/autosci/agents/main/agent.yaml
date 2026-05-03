@@ -1,0 +1,5 @@
+name: main
+description: "Research orchestrator — plans and coordinates the research workflow"
+tools: []
+max_iterations: 100
+prompt: prompt.md

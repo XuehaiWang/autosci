@@ -236,6 +236,9 @@ skills:
     - ./skills/
   include_builtin: true            # include built-in skills
 
+tools:
+  mineru_token_env: MINERU_TOKEN   # env var for MinerU PDF parsing token
+
 scientist:
   workspace: null                  # set by --workspace flag
   enable_trajectory: true          # record execution trajectory
@@ -253,7 +256,7 @@ scientist:
 | `GEMINI_API_KEY` | `gemini` provider | Google AI Studio API key |
 | `MINERU_TOKEN` | `read_pdf` tool | MinerU cloud PDF parsing token |
 
-You can use any env var name by setting `api_key_env` in the config.
+You can use any env var name by setting `api_key_env` (for LLM) or `mineru_token_env` (for PDF) in the config.
 
 ---
 

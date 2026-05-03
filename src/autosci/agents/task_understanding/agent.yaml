@@ -1,0 +1,10 @@
+name: task_understanding
+description: "Structured research task analysis: context parsing, paper summary integration, RQ and claim generation"
+tools:
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+max_iterations: 15
+prompt: prompt.md

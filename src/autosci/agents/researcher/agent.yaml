@@ -1,0 +1,12 @@
+name: researcher
+description: "Literature search, paper reading, and knowledge synthesis"
+tools:
+  - web_search
+  - web_fetch
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+max_iterations: 30
+prompt: prompt.md

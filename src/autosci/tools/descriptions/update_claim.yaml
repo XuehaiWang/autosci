@@ -1,0 +1,27 @@
+name: update_claim
+description: Update the verification status of a research Claim in task_plan.json. Call this whenever you obtain experimental
+  evidence that supports, refutes, or partially validates a Claim. This creates a traceable record of which claims have been
+  addressed and what the evidence was.
+toolset: agent
+input_schema:
+  type: object
+  properties:
+    claim_id:
+      type: string
+      description: The Claim ID to update (e.g. 'C1', 'C2')
+    status:
+      type: string
+      enum:
+      - supported
+      - refuted
+      - partial
+      - unverified
+      description: 'New status: ''supported'' (evidence confirms it), ''refuted'' (evidence contradicts it), ''partial'' (partially
+        confirmed with caveats), ''unverified'' (reset to initial state)'
+    evidence:
+      type: string
+      description: 'Concrete evidence for this status update: specific metric values, experiment results, citations. Be quantitative.'
+  required:
+  - claim_id
+  - status
+  - evidence

@@ -1,0 +1,20 @@
+name: delegate
+description: Delegate a subtask to a specialized subagent. The subagent runs independently with its own tool set and iteration
+  budget, then returns its result. Use this when a task is better handled by a specialist (e.g., code writing, data analysis,
+  literature search).
+toolset: agent
+input_schema:
+  type: object
+  properties:
+    agent:
+      type: string
+      description: Name of the subagent to delegate to (e.g., 'code', 'research', 'analysis')
+    task:
+      type: string
+      description: Clear description of the subtask for the subagent
+    context:
+      type: string
+      description: Relevant context from the current conversation to pass to the subagent
+  required:
+  - agent
+  - task

@@ -1,0 +1,22 @@
+name: recall_memory
+description: Search long-term memory for relevant information from past sessions. Use this to recall previous results, domain
+  knowledge, or learned procedures.
+toolset: memory
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+      description: What to search for in memory
+    memory_type:
+      type: string
+      enum:
+      - episodic
+      - semantic
+      - procedural
+      description: Filter by memory type. Omit to search all types.
+    limit:
+      type: integer
+      description: 'Maximum number of results. Default: 5'
+  required:
+  - query

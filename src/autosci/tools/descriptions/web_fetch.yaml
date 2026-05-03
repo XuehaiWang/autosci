@@ -1,0 +1,15 @@
+name: web_fetch
+description: Fetch and extract readable text content from a URL. Useful for reading web pages, documentation, or papers. Returns
+  the main text content, stripped of HTML tags.
+toolset: web
+input_schema:
+  type: object
+  properties:
+    url:
+      type: string
+      description: The URL to fetch
+    max_chars:
+      type: integer
+      description: 'Maximum characters to return. Default: 20000'
+  required:
+  - url

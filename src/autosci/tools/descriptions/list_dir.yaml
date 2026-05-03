@@ -1,0 +1,10 @@
+name: list_dir
+description: List files and directories in a given path.
+toolset: file
+input_schema:
+  type: object
+  properties:
+    path:
+      type: string
+      description: 'Directory path to list. Default: current directory'
+  required: []

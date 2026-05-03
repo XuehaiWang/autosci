@@ -1,0 +1,19 @@
+name: assistant
+description: "Personal AI assistant — helps with everyday tasks and learns your preferences"
+tools:
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+  - execute_command
+  - web_search
+  - web_fetch
+  - store_memory
+  - recall_memory
+  - list_skills
+  - view_skill
+  - create_skill
+  - ask_user
+max_iterations: 50
+prompt: prompt.md

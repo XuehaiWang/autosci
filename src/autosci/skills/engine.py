@@ -31,7 +31,7 @@ class SkillEngine:
     def __init__(self, skill_dirs: list[str], include_builtin: bool = True):
         self.skill_dirs = [os.path.expanduser(d) for d in skill_dirs]
         if include_builtin:
-            builtin_dir = os.path.join(os.path.dirname(__file__), "..", "builtin_skills")
+            builtin_dir = os.path.join(os.path.dirname(__file__), "builtin")
             builtin_dir = os.path.normpath(builtin_dir)
             if os.path.isdir(builtin_dir) and builtin_dir not in self.skill_dirs:
                 self.skill_dirs.append(builtin_dir)

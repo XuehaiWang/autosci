@@ -1,0 +1,17 @@
+name: terminal_read
+description: Read pending output from a terminal session without sending any input.
+toolset: terminal
+input_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: Session ID returned by terminal_start
+    yield_time_ms:
+      type: integer
+      description: 'Milliseconds to wait before reading. Default: 200'
+    max_output_chars:
+      type: integer
+      description: 'Maximum output characters to return. Default: 20000'
+  required:
+  - session_id

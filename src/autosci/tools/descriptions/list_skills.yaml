@@ -1,0 +1,8 @@
+name: list_skills
+description: List all available research skills (reusable procedure templates). Shows name and description for each skill.
+  Use view_skill to see the full procedure.
+toolset: skill
+input_schema:
+  type: object
+  properties: {}
+  required: []

@@ -1,0 +1,11 @@
+name: view_skill
+description: View the full content of a research skill (procedure template). Use list_skills first to see available skills.
+toolset: skill
+input_schema:
+  type: object
+  properties:
+    name:
+      type: string
+      description: Name of the skill to view
+  required:
+  - name

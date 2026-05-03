@@ -1,0 +1,25 @@
+name: terminal_write
+description: Send input to a terminal session and read back the resulting output. Use append_newline=true (default) to execute
+  commands. Increase yield_time_ms for slow commands.
+toolset: terminal
+input_schema:
+  type: object
+  properties:
+    session_id:
+      type: string
+      description: Session ID returned by terminal_start
+    input:
+      type: string
+      description: Text to send to the terminal
+    append_newline:
+      type: boolean
+      description: 'Append newline after input to execute as command. Default: true'
+    yield_time_ms:
+      type: integer
+      description: 'Milliseconds to wait before reading output. Default: 200'
+    max_output_chars:
+      type: integer
+      description: 'Maximum output characters to return. Default: 20000'
+  required:
+  - session_id
+  - input

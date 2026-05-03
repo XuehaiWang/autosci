@@ -157,6 +157,81 @@ class ToolRegistry:
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())
 
+    def discover_tools(self, descriptions_dir: str, impl_packages: list[str]) -> int:
+        """Auto-discover tools from YAML descriptions and bind to Python implementations.
+
+        For each YAML file in descriptions_dir:
+        1. Load the schema (name, description, toolset, input_schema)
+        2. Find the handler function by matching the tool name to a function
+           in one of the impl_packages
+
+        Args:
+            descriptions_dir: path to directory containing *.yaml tool descriptions
+            impl_packages: list of dotted module paths to search for handler functions
+                           (e.g., ["autosci.tools.impl.file_tools", ...])
+
+        Returns:
+            Number of tools successfully registered.
+        """
+        import importlib
+        import os
+        try:
+            import yaml
+        except ImportError:
+            logger.warning("pyyaml not installed — cannot discover tools from YAML")
+            return 0
+
+        if not os.path.isdir(descriptions_dir):
+            logger.warning(f"Tool descriptions directory not found: {descriptions_dir}")
+            return 0
+
+        # Pre-load all impl modules and collect their public functions
+        handler_map: dict[str, Callable] = {}
+        for mod_path in impl_packages:
+            try:
+                mod = importlib.import_module(mod_path)
+                for attr_name in dir(mod):
+                    if attr_name.startswith("_"):
+                        continue
+                    obj = getattr(mod, attr_name)
+                    if callable(obj):
+                        handler_map[attr_name] = obj
+            except Exception as e:
+                logger.warning(f"Failed to import tool module {mod_path}: {e}")
+
+        loaded = 0
+        for filename in sorted(os.listdir(descriptions_dir)):
+            if not filename.endswith(".yaml") and not filename.endswith(".yml"):
+                continue
+            filepath = os.path.join(descriptions_dir, filename)
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    desc = yaml.safe_load(f)
+                if not isinstance(desc, dict) or "name" not in desc:
+                    logger.warning(f"Invalid tool description: {filepath}")
+                    continue
+
+                tool_name = desc["name"]
+                handler = handler_map.get(tool_name)
+                if handler is None:
+                    logger.warning(f"No handler found for tool '{tool_name}' (from {filename})")
+                    continue
+
+                schema = {
+                    "name": tool_name,
+                    "description": desc.get("description", ""),
+                    "input_schema": desc.get("input_schema", {}),
+                }
+                toolset = desc.get("toolset", "default")
+                self.register(tool_name, schema, handler, toolset=toolset)
+                loaded += 1
+            except Exception as e:
+                logger.warning(f"Failed to load tool description {filepath}: {e}")
+
+        if loaded:
+            logger.info(f"Discovered {loaded} tool(s) from YAML descriptions")
+        return loaded
+
 
 # Singleton instance — all tool modules register against this.
 registry = ToolRegistry()

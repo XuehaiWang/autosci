@@ -1,0 +1,15 @@
+name: write_file
+description: Write content to a file. Creates parent directories if needed. Overwrites existing files.
+toolset: file
+input_schema:
+  type: object
+  properties:
+    path:
+      type: string
+      description: Absolute or relative path to the file
+    content:
+      type: string
+      description: The content to write
+  required:
+  - path
+  - content

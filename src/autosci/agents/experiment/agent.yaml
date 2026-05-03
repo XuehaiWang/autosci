@@ -1,0 +1,11 @@
+name: experiment
+description: "Experiment design, parameter selection, and methodology planning"
+tools:
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+  - execute_command
+max_iterations: 30
+prompt: prompt.md

@@ -1,0 +1,10 @@
+name: paper_summary
+description: "Extract reproduction-critical information from research papers: method names, baselines, quantitative results, figure types, special tools"
+tools:
+  - read_file
+  - read_pdf
+  - write_file
+  - list_dir
+  - glob
+max_iterations: 20
+prompt: prompt.md

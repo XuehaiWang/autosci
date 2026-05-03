@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from autosci.agents.base import BaseAgent
-    from autosci.trajectory.recorder import TrajectoryRecorder
+    from autosci.middleware.trajectory.recorder import TrajectoryRecorder
 
 
 @dataclass

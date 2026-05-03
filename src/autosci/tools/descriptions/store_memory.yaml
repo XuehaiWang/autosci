@@ -1,0 +1,29 @@
+name: store_memory
+description: Store a piece of information in long-term memory for future sessions. Use this to remember key findings, domain
+  knowledge, or effective procedures. Memories persist across sessions and are automatically retrieved when relevant.
+toolset: memory
+input_schema:
+  type: object
+  properties:
+    content:
+      type: string
+      description: The information to remember
+    memory_type:
+      type: string
+      enum:
+      - episodic
+      - semantic
+      - procedural
+      description: 'Type of memory: ''episodic'' for events/results/failures, ''semantic'' for domain knowledge, ''procedural''
+        for workflows/procedures'
+    tags:
+      type: array
+      items:
+        type: string
+      description: Keywords for retrieval (e.g., ['training', 'resnet', 'cifar10'])
+    summary:
+      type: string
+      description: One-line summary (under 120 chars). Auto-generated if omitted.
+  required:
+  - content
+  - memory_type

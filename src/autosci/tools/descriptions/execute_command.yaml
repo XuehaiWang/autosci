@@ -1,0 +1,18 @@
+name: execute_command
+description: Execute a shell command and return its output. Use this for running programs, installing packages, git operations,
+  etc. Commands run in the current working directory.
+toolset: terminal
+input_schema:
+  type: object
+  properties:
+    command:
+      type: string
+      description: The shell command to execute
+    timeout:
+      type: integer
+      description: 'Timeout in seconds. Default: 120'
+    working_dir:
+      type: string
+      description: 'Working directory for the command. Default: current directory'
+  required:
+  - command

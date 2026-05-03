@@ -19,24 +19,30 @@ import sys
 
 def _bootstrap():
     """Auto-register all built-in tools and agents."""
-    import autosci.tools.file_tools       # noqa: F401
-    import autosci.tools.pdf_tools        # noqa: F401
-    import autosci.tools.terminal_tool    # noqa: F401
-    import autosci.tools.terminal_tools   # noqa: F401
-    import autosci.tools.agent_tools      # noqa: F401
-    import autosci.tools.memory_tools     # noqa: F401
-    import autosci.tools.skill_tools      # noqa: F401
-    import autosci.tools.web_tools        # noqa: F401
-    import autosci.agents.main_agent      # noqa: F401
-    import autosci.agents.assistant_agent # noqa: F401
-    import autosci.agents.topic_agent      # noqa: F401
+    import os
+    from autosci.tools.registry import registry as tool_registry
+
+    # Discover tools from YAML descriptions + Python implementations
+    descriptions_dir = os.path.join(os.path.dirname(__file__), "tools", "descriptions")
+    impl_packages = [
+        "autosci.tools.impl.file_tools",
+        "autosci.tools.impl.shell_tools",
+        "autosci.tools.impl.web_tools",
+        "autosci.tools.impl.pdf_tools",
+        "autosci.tools.impl.memory_tools",
+        "autosci.tools.impl.skill_tools",
+        "autosci.tools.impl.agent_tools",
+    ]
+    tool_registry.discover_tools(descriptions_dir, impl_packages)
+
+    # Discover agents from YAML definitions
     from autosci.agents.registry import agent_registry
     agent_registry.discover_yaml()
 
 
 def _init_workspace():
     """Initialize the autosci global workspace."""
-    from autosci.configs.default import create_default_config_file
+    from autosci.config import create_default_config_file
 
     home = os.path.expanduser("~/.autosci")
     created = []
@@ -108,30 +114,9 @@ def _build_scientist_config(base_config: dict, autosci_dir: str, share_memory: b
 # ── Assistant mode ─────────────────────────────────────────────────────────────
 
 def _run_assistant(args, config):
-    """Run in assistant mode (REPL or single-shot)."""
-    from autosci.agents.assistant_agent import AssistantAgent
-    from autosci.runtime.runner import AgentRunner
-
-    agent = AssistantAgent()
-    if args.max_iterations:
-        agent.max_iterations = args.max_iterations
-
-    runner = AgentRunner(config)
-
-    if args.interactive or not getattr(args, "task_str", None):
-        from autosci.runtime.repl import REPL
-        repl = REPL(runner, agent, mode="assistant")
-        repl.run()
-    else:
-        from rich.console import Console
-        from rich.markdown import Markdown
-        console = Console()
-        console.print(f"[dim]AutoSci assistant (model={config['llm']['model']})[/dim]\n")
-        result = runner.run(agent, args.task_str)
-        console.print(f"\n[dim]Status: {result.status} | "
-                      f"Tokens: {result.token_usage.total_tokens:,} | "
-                      f"Tool calls: {result.tool_calls_count}[/dim]\n")
-        console.print(Markdown(result.response))
+    """Delegate to modes.assistant."""
+    from autosci.modes.assistant import run_assistant
+    run_assistant(args, config)
 
 
 # ── Scientist mode ─────────────────────────────────────────────────────────────
@@ -141,7 +126,7 @@ def _run_scientist(args):
     from rich.console import Console
     from rich.panel import Panel
     from rich.markdown import Markdown
-    from autosci.scientist import run_scientist
+    from autosci.modes.scientist import run_scientist
 
     console = Console()
 
@@ -159,7 +144,7 @@ def _run_scientist(args):
 
     def on_event(event: str, data: dict):
         if event == "workspace_ready":
-            from autosci.configs.default import load_config
+            from autosci.config import load_config
             cfg = load_config()
             if args.model:
                 cfg["llm"]["model"] = args.model
@@ -363,7 +348,7 @@ def main():
     parser.add_argument("--init", action="store_true", help="Initialize autosci workspace and exit")
     parser.add_argument("--max-iterations", type=int, default=None)
 
-    subparsers = parser.add_subparsers(dest="mode")
+    subparsers = parser.add_subparsers(dest="mode", required=False)
 
     # ── scientist subcommand ──
     scientist_parser = subparsers.add_parser(
@@ -415,13 +400,36 @@ def main():
     show_parser = agent_sub.add_parser("show", help="Show an agent's YAML definition")
     show_parser.add_argument("agent_name", help="Agent name")
 
-    # ── assistant positional (default) ──
-    parser.add_argument("task_str", nargs="?", default=None,
-                        help="Assistant task (omit for interactive REPL)")
     parser.add_argument("-i", "--interactive", action="store_true",
                         help="Force interactive REPL mode")
 
-    args = parser.parse_args()
+    # Detect whether the first non-flag argument is a known subcommand.
+    # If not, extract it as the assistant task string before argparse sees it,
+    # because argparse subparsers are greedy and would error on unknown choices.
+    _SUBCOMMANDS = {"scientist", "workflow", "agent"}
+    argv = sys.argv[1:]
+    task_str_from_argv = None
+
+    # Find the first positional (non-flag) argument
+    first_positional = None
+    for a in argv:
+        if a.startswith("-"):
+            continue
+        first_positional = a
+        break
+
+    if first_positional and first_positional not in _SUBCOMMANDS:
+        # Remove the task string from argv so argparse doesn't choke
+        task_str_from_argv = first_positional
+        argv = [a for a in argv if a != first_positional]
+
+    args = parser.parse_args(argv)
+
+    # Set task_str from what we extracted
+    if task_str_from_argv is not None:
+        args.task_str = task_str_from_argv
+    elif not hasattr(args, "task_str"):
+        args.task_str = None
 
     # --init
     if args.init:
@@ -454,7 +462,7 @@ def main():
         return
 
     # Assistant mode
-    from autosci.configs.default import load_config
+    from autosci.config import load_config
     config = load_config()
     if args.model:
         config["llm"]["model"] = args.model

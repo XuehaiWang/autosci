@@ -7,21 +7,21 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
-from autosci.context.compressor import SummarizationCompressor, _estimate_message_tokens
-from autosci.context.engine import ContextEngine
-from autosci.memory.file_provider import FileMemoryProvider
-from autosci.memory.manager import MemoryManager
+from autosci.middleware.context.compressor import SummarizationCompressor, _estimate_message_tokens
+from autosci.middleware.context.engine import ContextEngine
+from autosci.middleware.memory.file_provider import FileMemoryProvider
+from autosci.middleware.memory.manager import MemoryManager
 from autosci.protocols.schemas import RunContext, RunResult, TokenUsage
 from autosci.runtime.llm_client import LLMClient
 from autosci.runtime.prompt_builder import PromptBuilder
 from autosci.runtime.error_handler import ErrorHandler
 from autosci.skills.engine import SkillEngine
-from autosci.storage.session_store import SessionStore
-from autosci.storage.exporter import SessionExporter
+from autosci.middleware.storage.session_store import SessionStore
+from autosci.middleware.storage.exporter import SessionExporter
 from autosci.tools.registry import registry as tool_registry
 from autosci.agents.registry import agent_registry
-from autosci.trajectory.recorder import TrajectoryRecorder
-from autosci.trajectory.exporter import TrajectoryExporter
+from autosci.middleware.trajectory.recorder import TrajectoryRecorder
+from autosci.middleware.trajectory.exporter import TrajectoryExporter
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +86,12 @@ class AgentRunner:
         )
 
         # Inject memory manager into memory tools
-        from autosci.tools.memory_tools import set_memory_manager
+        from autosci.tools.impl.memory_tools import set_memory_manager
         set_memory_manager(self.memory_manager)
+
+        # Inject tools config (for MINERU_TOKEN resolution etc.)
+        from autosci.tools.impl.pdf_tools import set_tools_config
+        set_tools_config(config.get("tools", {}))
 
         # Skill engine
         skills_config = config.get("skills", {})
@@ -97,7 +101,7 @@ class AgentRunner:
         )
 
         # Inject skill engine into skill tools
-        from autosci.tools.skill_tools import set_skill_engine
+        from autosci.tools.impl.skill_tools import set_skill_engine
         set_skill_engine(self.skill_engine)
 
     def _make_child_runner(self) -> "AgentRunner":
@@ -143,10 +147,12 @@ class AgentRunner:
         so that memory_tools and skill_tools resolve the correct instances for
         this thread rather than a stale reference from another thread.
         """
-        from autosci.tools.memory_tools import set_memory_manager
-        from autosci.tools.skill_tools import set_skill_engine
+        from autosci.tools.impl.memory_tools import set_memory_manager
+        from autosci.tools.impl.skill_tools import set_skill_engine
+        from autosci.tools.impl.pdf_tools import set_tools_config
         set_memory_manager(self.memory_manager)
         set_skill_engine(self.skill_engine)
+        set_tools_config(self.config.get("tools", {}))
 
     def run(
         self,
@@ -391,9 +397,9 @@ class AgentRunner:
             )
 
         if self.auto_export:
-            self.session_exporter.export_on_session_end(
+            self.session_exporter.export(
                 result.session_id,
-                workspace=os.getcwd(),
+                output_dir=self.export_dir,
             )
 
     def export_trajectory(self, task: str = "", task_plan: dict = None) -> str:
@@ -634,7 +640,7 @@ class AgentRunner:
         """Update a Claim's status in workspace/task_plan.json and record in trajectory."""
         import datetime
         from autosci.protocols.task_plan import load_task_plan, save_task_plan
-        from autosci.trajectory.schemas import TrajectoryEvent
+        from autosci.middleware.trajectory.schemas import TrajectoryEvent
 
         claim_id = args.get("claim_id", "").strip()
         new_status = args.get("status", "").strip()

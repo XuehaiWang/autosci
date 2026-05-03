@@ -1,0 +1,12 @@
+name: writer
+description: "Report writing, document formatting, and scientific communication"
+tools:
+  - web_search
+  - web_fetch
+  - read_file
+  - write_file
+  - list_dir
+  - glob
+  - grep
+max_iterations: 25
+prompt: prompt.md
