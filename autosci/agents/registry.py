@@ -77,8 +77,8 @@ class AgentRegistry:
         2. Flat file:       <dir>/<name>.yaml
 
         Loading order (later entries can override earlier ones by name):
-        1. Built-in agents:  src/autosci/agents/*/agent.yaml
-        2. Legacy templates: src/autosci/agents/templates/*.yaml
+        1. Built-in agents:  autosci/agents/*/agent.yaml
+        2. Legacy templates: autosci/agents/templates/*.yaml
         3. User dir:         ~/.autosci/agents/*/agent.yaml + ~/.autosci/agents/*.yaml
         4. extra_dirs        (caller-supplied paths, if any)
 

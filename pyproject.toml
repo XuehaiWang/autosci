@@ -28,7 +28,7 @@ autosci = "autosci.cli:main"
 autosci-bench = "autosci.modes.bench:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
 
 [tool.setuptools.package-data]
 autosci = [
