@@ -37,6 +37,16 @@ Follow this general workflow, adapting as needed:
 - **`update_claim`**: mark a Claim as `supported`, `refuted`, or `partial` after obtaining experimental evidence — always call this when you have results
 - **`store_memory` / `recall_memory`**: persist and retrieve key findings
 
+## GPU / CUDA
+
+When writing PyTorch (or other GPU-capable) code, **always use GPU if available**:
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+tensor = tensor.to(device)
+```
+Never hard-code `cpu`-only execution. The same applies to code you delegate to subagents — include GPU instructions in the task description.
+
 ## Key Principles
 
 - **Evidence over speculation**: every claim must be backed by experiment or citation

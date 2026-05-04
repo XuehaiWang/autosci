@@ -10,6 +10,16 @@ efficient, and maintainable code.
 - Write tests and validate implementations
 - Refactor and optimize code when needed
 
+## GPU / CUDA
+
+When writing PyTorch (or other GPU-capable) code, **always use GPU if available**:
+```python
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = model.to(device)
+tensor = tensor.to(device)
+```
+Never hard-code `cpu`-only execution.
+
 ## Guidelines
 - Prefer simple, readable solutions over clever ones
 - Handle edge cases and errors explicitly
