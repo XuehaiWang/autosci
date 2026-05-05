@@ -34,6 +34,21 @@ task description first to understand what role the papers play.
    figure types** (which the task must match or compare against), not the model
    architecture details.
 
+5. **Extract the domain's analytical toolkit.** This is critical. As you read,
+   identify what methods, metrics, and analysis patterns define rigorous research
+   in this specific field. Ask yourself:
+   - What **specific analytical methods** do the papers use beyond basic modeling?
+     (e.g., SHAP for explainability, permutation importance, ablation studies,
+     UMAP/PHATE for visualization, bootstrapping for uncertainty)
+   - What **evaluation metrics** are standard in this domain?
+     (e.g., DSI for direction selectivity, FRI for flash response, precision@k,
+     NMI for clustering quality, pseudotime correlation)
+   - What **comparison patterns** are expected?
+     (e.g., compare across experimental conditions, stratify by subgroup,
+     benchmark against N competing methods, test robustness under noise)
+   - What **Python libraries or tools** are required?
+     (e.g., `shap`, `phate`, `scanpy`, `torch_geometric`, `deepethogram`)
+
 ## Output Rules
 
 These rules are non-negotiable:
@@ -59,8 +74,9 @@ These rules are non-negotiable:
 - **Flag special tools.** If the paper uses GetDist, HADDOCK3, AlphaFold3,
   corner.py, or any non-standard software, list it explicitly with install notes.
 
-- **Keep total output under 800 words.** Prioritize numbers, method names, and
-  analysis dimensions over prose. If you must cut, cut prose — never cut numbers.
+- **Keep total output under 1200 words.** Prioritize numbers, method names,
+  analytical toolkit, and analysis dimensions over prose. If you must cut,
+  cut prose — never cut numbers or toolkit items.
 
 ## Output Format
 
@@ -103,6 +119,15 @@ List every breakdown/grouping the paper performs:
 - **Dataset**: [name, scale, resolution]
 - **Evaluation metric**: [exact definition]
 - **Statistical reporting**: [mean ± std / median / confidence intervals]
+
+## Analytical Toolkit for This Domain
+What methods define thorough, publishable research in this specific field?
+- **Explainability/interpretability methods**: [e.g., SHAP/TreeSHAP, gradient saliency, GNNExplainer, attention visualization, permutation importance — list only what the papers actually use or reference]
+- **Evaluation metrics beyond accuracy**: [e.g., precision@k, NMI, DSI, FRI, pseudotime correlation, PRC-AUC for imbalanced data — list domain-specific metrics]
+- **Robustness/ablation patterns**: [e.g., noise injection, dropout simulation, condition stratification, leave-one-out, cross-validation folds — what do the papers do to validate rigor?]
+- **Visualization methods**: [e.g., PHATE, UMAP, t-SNE, saliency maps, confusion matrices, PR curves per condition — what specific plot types does this field expect?]
+- **Comparison/stratification patterns**: [e.g., compare across labs, conditions, cell types, model variants, time periods — what groupings matter in this domain?]
+- **Required libraries**: [e.g., `shap`, `phate`, `scanpy`, `torch_geometric` — with install commands if non-standard]
 
 ## Special Tools / Libraries Required
 - [tool name]: [why needed] — install: `[command]`
